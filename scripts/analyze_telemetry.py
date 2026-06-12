@@ -1,11 +1,9 @@
-"""Telemetry 分析工具。
+"""Supervisor 遥测汇总脚本（本地调试用）。
 
-功能概述：从 Webots 仿真产生的 telemetry.jsonl 提取赛道表现数据。
-输入输出：读取 telemetry.jsonl 和可选的 metadata.json，输出圈速、速度统计和轨迹摘要。
-处理流程：自动检测起跑线位置，通过轨迹穿线检测识别圈数完成。
-
-用法：
-    python scripts/analyze_telemetry.py [--dir recordings_path] [--json]
+功能概述：把 supervisor 写出的大体量 `telemetry.jsonl` 压成约 40 行可读汇总。
+输入输出：输入 `telemetry.jsonl`（默认读 SDK 的 `.local/recordings/`），输出位置/速度/爬行/事件统计。
+处理流程：流式解析每帧 → 取目标车 → 统计速度分布、低速爬行段、近停点、事件 → 可选归档到 repo。
+设计目的：原始文件可达十几万行，绝不整体读入上下文；本脚本只打印聚合结果，token 成本极低。
 """
 
 from __future__ import annotations
@@ -13,251 +11,240 @@ from __future__ import annotations
 import argparse
 import json
 import math
-import pathlib
-import sys
-from collections import defaultdict
-from typing import Optional
+import shutil
+from datetime import datetime
+from pathlib import Path
 
-ROOT = pathlib.Path(__file__).resolve().parents[1]
-DEFAULT_RECORDINGS = ROOT / "pkudsa.airacer" / "sdk" / ".local" / "recordings"
+ROOT = Path(__file__).resolve().parents[1]
+SDK_DEFAULT = Path("/Users/day/Desktop/Github/pkudsa.airacer/sdk/.local/recordings")
+DEFAULT_TELEMETRY = SDK_DEFAULT / "telemetry.jsonl"
+ARCHIVE_ROOT = ROOT / ".tmp" / "recordings"
 
 
-def load_telemetry(rec_dir: pathlib.Path) -> list[dict]:
-    """加载 telemetry.jsonl 行。"""
-    path = rec_dir / "telemetry.jsonl"
-    if not path.is_file():
-        raise FileNotFoundError(f"telemetry.jsonl not found: {path}")
-    frames = []
-    with open(path, encoding="utf-8") as f:
-        for line in f:
+def _pct(values: list[float], q: float) -> float:
+    if not values:
+        return 0.0
+    ordered = sorted(values)
+    idx = min(len(ordered) - 1, max(0, int(round(q * (len(ordered) - 1)))))
+    return ordered[idx]
+
+
+def _load_car_frames(path: Path, team_id: str | None) -> tuple[list[dict], list[tuple[float, dict]]]:
+    """流式读取遥测，返回目标车的逐帧记录与全部事件。"""
+
+    frames: list[dict] = []
+    events: list[tuple[float, dict]] = []
+    with path.open("r", encoding="utf-8") as handle:
+        for line in handle:
             line = line.strip()
-            if line:
-                frames.append(json.loads(line))
-    return frames
+            if not line:
+                continue
+            try:
+                rec = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            t = rec.get("t")
+            cars = rec.get("cars") or []
+            for ev in rec.get("events") or []:
+                events.append((t, ev))
+            car = None
+            if team_id is None:
+                car = cars[0] if cars else None
+            else:
+                for candidate in cars:
+                    if candidate.get("team_id") == team_id:
+                        car = candidate
+                        break
+            if car is None:
+                continue
+            x, y, speed = car.get("x"), car.get("y"), car.get("speed")
+            if x is None or y is None or speed is None:
+                continue
+            if any(math.isnan(v) for v in (float(x), float(y), float(speed))):
+                continue
+            frames.append({
+                "t": float(t),
+                "x": float(x),
+                "y": float(y),
+                "speed": float(speed),
+                "lap": car.get("lap", 0),
+                "lap_progress": float(car.get("lap_progress", 0.0)),
+                "status": car.get("status", "normal"),
+            })
+    return frames, events
 
 
-def load_metadata(rec_dir: pathlib.Path) -> dict:
-    """加载 metadata.json。"""
-    path = rec_dir / "metadata.json"
-    if path.is_file():
-        with open(path, encoding="utf-8") as f:
-            return json.load(f)
-    return {}
+def _split_runs(frames: list[dict]) -> list[list[dict]]:
+    """按时间戳回退把交错的遥测切成多段 run。
 
-
-def detect_laps_from_trajectory(frames: list[dict], car_index: int = 0) -> dict:
-    """从位置轨迹自动检测每圈完成。
-
-    算法：找到车辆 spawn 位置，在其 y 坐标附近建立穿线检测区域。
-    当车辆从下方穿越 spawn_y 线（由下向上）时计为一圈完成。
-
-    返回包含 lap_times、estimated_laps、speed_stats 的 dict。
+    功能：supervisor 的 telemetry.jsonl 可能累积多次 run（孤儿进程/未截断），导致 t 非单调。
+    参数：`frames` 是按文件顺序的逐帧记录。
+    返回：每段为一次 run（t 单调递增）；最后一段即最近一次 run。
+    逻辑：遇到 t 比上一帧小就切段。
     """
-    if not frames:
-        return {"lap_times": [], "estimated_laps": 0, "speed_stats": {}}
 
-    # 提取轨迹
-    xs, ys, speeds, times = [], [], [], []
-    for frame in frames:
-        cars = frame.get("cars", [])
-        if car_index < len(cars):
-            c = cars[car_index]
-            xs.append(c["x"])
-            ys.append(c["y"])
-            speeds.append(c["speed"])
-            times.append(frame["t"])
+    segments: list[list[dict]] = []
+    current: list[dict] = []
+    last_t = None
+    for fr in frames:
+        if last_t is not None and fr["t"] < last_t - 1e-6:
+            if current:
+                segments.append(current)
+            current = []
+        current.append(fr)
+        last_t = fr["t"]
+    if current:
+        segments.append(current)
+    return segments
 
-    if len(times) < 10:
-        return {"lap_times": [], "estimated_laps": 0, "speed_stats": {}}
 
-    # 自动检测 spawn 位置和起跑线
-    spawn_x, spawn_y = xs[0], ys[0]
+def _read_metadata_frames(telemetry_path: Path) -> int | None:
+    """读取同目录 metadata.json 的 total_frames，用于完整性交叉校验。"""
 
-    # 找到车辆前进主方向（前 20 帧的平均位移方向）
-    n_preview = min(20, len(xs) - 1)
-    dy_sum = sum(ys[i + 1] - ys[i] for i in range(n_preview))
-    forward_sign = 1 if dy_sum > 0 else -1  # +1 = 向北出发, -1 = 向南出发
+    meta = telemetry_path.parent / "metadata.json"
+    if not meta.is_file():
+        return None
+    try:
+        return int(json.loads(meta.read_text(encoding="utf-8")).get("total_frames"))
+    except (ValueError, TypeError, json.JSONDecodeError):
+        return None
 
-    # 在 spawn_y 附近建立穿线检测区域
-    # line_y 设为 spawn_y + 偏移（确保初始位置在线的"后方"）
-    line_margin = 2.0
-    line_y = spawn_y + forward_sign * line_margin
 
-    # 穿线检测状态机
-    lap_times = []
-    lap_start_time = None
-    crossed_above = forward_sign > 0  # 需要先穿到线的另一侧
+def _longest_low_speed(frames: list[dict], thresh: float) -> dict | None:
+    """找最长的连续低速（<thresh）爬行段。"""
 
-    # 如果向北出发 (forward_sign > 0):
-    #   - 初始在 spawn_y（线下方）
-    #   - 需要先去线上方 (y > line_y)，再回来穿线 (y < line_y)
-    # 如果向南出发 (forward_sign < 0):
-    #   - 初始在 spawn_y（线上方）
-    #   - 需要先去线下方 (y < line_y)，再回来穿线 (y > line_y)
+    best = None
+    run_start = None
+    for i, fr in enumerate(frames):
+        if fr["speed"] < thresh:
+            if run_start is None:
+                run_start = i
+        else:
+            if run_start is not None:
+                best = _take_longer(best, frames, run_start, i - 1)
+                run_start = None
+    if run_start is not None:
+        best = _take_longer(best, frames, run_start, len(frames) - 1)
+    return best
 
-    # 简化：检测 y 从 line_y 的一侧穿到另一侧
-    was_far_side = False  # 是否已经到达过线的远侧
-    last_side = None
 
-    for i in range(len(times)):
-        current_side = "far" if (ys[i] - line_y) * forward_sign > 0 else "near"
-
-        if last_side is not None:
-            # 检测穿线：从 far 侧穿回 near 侧
-            if last_side == "far" and current_side == "near" and was_far_side:
-                if lap_start_time is not None:
-                    lap_time = times[i] - lap_start_time
-                    if lap_time > 5.0:  # 过滤假穿线（至少 5 秒一圈）
-                        lap_times.append(lap_time)
-                    lap_start_time = times[i]
-                else:
-                    # 第一次穿线 = 比赛开始
-                    lap_start_time = times[i]
-
-            if current_side == "far":
-                was_far_side = True
-
-        # 如果 lap_start_time 仍未设置（尚未穿线），用第一次远侧作为起点
-        if lap_start_time is None and current_side == "far":
-            lap_start_time = times[i]
-            was_far_side = True
-
-        last_side = current_side
-
-    # 速度统计
-    if speeds:
-        speeds_sorted = sorted(speeds)
-        speed_stats = {
-            "max_m_s": round(max(speeds), 2),
-            "mean_m_s": round(sum(speeds) / len(speeds), 2),
-            "median_m_s": round(speeds_sorted[len(speeds_sorted) // 2], 2),
-            "p90_m_s": round(speeds_sorted[int(len(speeds_sorted) * 0.9)], 2),
+def _take_longer(best, frames, i0, i1):
+    dur = frames[i1]["t"] - frames[i0]["t"]
+    if best is None or dur > best["dur"]:
+        return {
+            "dur": dur,
+            "t0": frames[i0]["t"], "t1": frames[i1]["t"],
+            "x0": frames[i0]["x"], "y0": frames[i0]["y"],
+            "x1": frames[i1]["x"], "y1": frames[i1]["y"],
         }
-    else:
-        speed_stats = {}
-
-    return {
-        "lap_times": [round(t, 3) for t in lap_times],
-        "estimated_laps": len(lap_times),
-        "speed_stats": speed_stats,
-        "total_sim_time": round(times[-1], 1) if times else 0,
-        "spawn": (round(spawn_x, 2), round(spawn_y, 2)),
-        "detection_line_y": round(line_y, 2),
-    }
+    return best
 
 
-def analyze_telemetry(rec_dir: pathlib.Path) -> dict:
-    """分析一次仿真的完整遥测数据。"""
-    frames = load_telemetry(rec_dir)
-    metadata = load_metadata(rec_dir)
-
-    n_cars = len(frames[0]["cars"]) if frames else 0
-    cars_analysis = []
-    for i in range(n_cars):
-        team_id = frames[0]["cars"][i].get("team_id", f"car_{i}") if frames else f"car_{i}"
-        result = detect_laps_from_trajectory(frames, car_index=i)
-        result["team_id"] = team_id
-
-        # 尝试从官方事件中补充数据
-        official_laps = 0
-        official_best = None
-        for frame in frames:
-            for event in frame.get("events", []):
-                if event.get("type") == "lap_complete" and event.get("team_id") == team_id:
-                    official_laps += 1
-                    lt = event.get("lap_time")
-                    if lt is not None and (official_best is None or lt < official_best):
-                        official_best = lt
-        result["official_laps"] = official_laps
-        result["official_best_lap"] = official_best
-        cars_analysis.append(result)
-
-    # 碰撞统计
-    collisions = []
-    for frame in frames:
-        for event in frame.get("events", []):
-            if event.get("type") == "collision":
-                collisions.append(event)
-
-    return {
-        "session_id": metadata.get("session_id", ""),
-        "session_type": metadata.get("session_type", ""),
-        "total_laps_config": metadata.get("total_laps", 0),
-        "finish_reason": metadata.get("finish_reason", ""),
-        "duration_sim": metadata.get("duration_sim", 0),
-        "cars": cars_analysis,
-        "collision_summary": {
-            "total": len(collisions),
-            "major": sum(1 for c in collisions if c.get("severity") == "major"),
-            "minor": sum(1 for c in collisions if c.get("severity") == "minor"),
-        },
-        "official_rankings": metadata.get("final_rankings", []),
-    }
-
-
-def print_report(analysis: dict):
-    """打印人类可读的分析报告。"""
-    print(f"\n{'='*60}")
-    print(f"遥测分析报告")
-    print(f"{'='*60}")
-    print(f"Session:     {analysis['session_id']}")
-    print(f"类型:        {analysis['session_type']}")
-    print(f"配置圈数:    {analysis['total_laps_config']}")
-    print(f"仿真时长:    {analysis['duration_sim']:.1f}s")
-    print(f"结束原因:    {analysis['finish_reason']}")
-
-    print(f"\n── 碰撞 ──")
-    cs = analysis["collision_summary"]
-    print(f"  总计: {cs['total']} (严重: {cs['major']}, 轻微: {cs['minor']})")
-
-    for car in analysis["cars"]:
-        print(f"\n── {car['team_id']} ──")
-        print(f"  检测圈数 (轨迹):  {car['estimated_laps']}")
-        print(f"  官方圈数 (事件):  {car['official_laps']}")
-        if car["lap_times"]:
-            print(f"  圈速:             {car['lap_times']}")
-            print(f"  最快圈:           {min(car['lap_times']):.1f}s")
-        if car.get("official_best_lap"):
-            print(f"  官方最快圈:       {car['official_best_lap']:.1f}s")
-        ss = car.get("speed_stats", {})
-        if ss:
-            print(f"  速度 max/mean/median/p90: {ss.get('max_m_s')}/{ss.get('mean_m_s')}/{ss.get('median_m_s')}/{ss.get('p90_m_s')} m/s")
-        print(f"  生成位置:         {car.get('spawn')}")
-        print(f"  检测线 y:         {car.get('detection_line_y')}")
-
-    if analysis["official_rankings"]:
-        print(f"\n── 官方排名 ──")
-        for r in analysis["official_rankings"]:
-            print(f"  #{r['rank']} {r['team_id']}: laps={r['laps']} best={r['best_lap']} total={r['total_time']}")
-
-    print()
-
-
-def parse_args():
-    parser = argparse.ArgumentParser(description="Analyze AI Racer telemetry data")
-    parser.add_argument("--dir", type=pathlib.Path, default=None,
-                        help="recordings 目录路径（默认 SDK .local/recordings）")
-    parser.add_argument("--json", action="store_true",
-                        help="以 JSON 格式输出")
-    return parser.parse_args()
+def _archive(src_dir: Path, label: str) -> Path:
+    dest = ARCHIVE_ROOT / label
+    dest.mkdir(parents=True, exist_ok=True)
+    for name in ("telemetry.jsonl", "metadata.json", "live_view.jpg"):
+        src = src_dir / name
+        if src.exists():
+            shutil.copy2(src, dest / name)
+    return dest
 
 
 def main() -> int:
-    args = parse_args()
-    rec_dir = args.dir or DEFAULT_RECORDINGS
+    parser = argparse.ArgumentParser(description="汇总 supervisor telemetry.jsonl。")
+    parser.add_argument("--telemetry", type=Path, default=DEFAULT_TELEMETRY,
+                        help=f"telemetry.jsonl 路径（默认 {DEFAULT_TELEMETRY}）")
+    parser.add_argument("--team-id", default=None, help="目标车 team_id（默认取每帧第一辆车）")
+    parser.add_argument("--archive", default=None,
+                        help="归档标签：把本次原始遥测复制到 .tmp/recordings/<标签>/ 留档")
+    parser.add_argument("--no-archive", action="store_true", help="不自动归档")
+    args = parser.parse_args()
 
-    try:
-        analysis = analyze_telemetry(rec_dir)
-    except FileNotFoundError as e:
-        print(f"错误: {e}", file=sys.stderr)
+    path = args.telemetry
+    if not path.is_file():
+        print(f"[error] 找不到遥测文件: {path}")
         return 1
 
-    if args.json:
-        print(json.dumps(analysis, ensure_ascii=False, indent=2))
+    all_frames, events = _load_car_frames(path, args.team_id)
+    if not all_frames:
+        print(f"[error] 未解析到任何车辆帧（team_id={args.team_id}）")
+        return 1
+
+    # 完整性：telemetry.jsonl 可能跨 run 残留，只取最近一段，并与 metadata 交叉校验。
+    runs = _split_runs(all_frames)
+    frames = runs[-1]
+    meta_frames = _read_metadata_frames(path)
+    integrity = "clean"
+    if len(runs) > 1:
+        integrity = f"interleaved（检测到 {len(runs)} 段 run，仅用最后一段）"
+    elif meta_frames is not None and abs(len(frames) - meta_frames) > 2:
+        integrity = f"suspect（本段 {len(frames)} 帧 vs metadata.total_frames {meta_frames}）"
+
+    speeds = [f["speed"] for f in frames]
+    moving = [s for s in speeds if s > 0.05]
+    dist = sum(
+        math.hypot(frames[i]["x"] - frames[i - 1]["x"], frames[i]["y"] - frames[i - 1]["y"])
+        for i in range(1, len(frames))
+    )
+    t0, t1 = frames[0]["t"], frames[-1]["t"]
+    span = t1 - t0
+    n = len(frames)
+    frac_lt = lambda th: sum(1 for s in speeds if s < th) / n
+
+    # 时间分桶速度剖面（10 段）
+    bins = 10
+    profile = []
+    for b in range(bins):
+        lo = t0 + span * b / bins
+        hi = t0 + span * (b + 1) / bins
+        seg = [f["speed"] for f in frames if lo <= f["t"] < hi] or [0.0]
+        profile.append(sum(seg) / len(seg))
+
+    end = frames[-1]
+    max_progress = max(f["lap_progress"] for f in frames)
+    max_lap = max(f["lap"] for f in frames)
+
+    archive_dir = None
+    if not args.no_archive:
+        label = args.archive or datetime.now().strftime("run_%Y%m%d_%H%M%S")
+        archive_dir = _archive(path.parent, label)
+
+    print("================ TELEMETRY 汇总 ================")
+    print(f"源文件     : {path}")
+    if archive_dir:
+        print(f"已归档     : {archive_dir}")
+    print(f"完整性     : {integrity}"
+          + (f"  (metadata.total_frames={meta_frames})" if meta_frames is not None else ""))
+    print(f"帧数/时长  : {n} 帧, t={t0:.2f}→{t1:.2f} ({span:.1f}s)")
+    print(f"行驶距离   : {dist:.1f} (单位 = world 坐标)")
+    print(f"终点       : x={end['x']:.2f}, y={end['y']:.2f}, speed={end['speed']:.3f}, status={end['status']}")
+    print(f"圈数/进度  : lap={max_lap}, max_lap_progress={max_progress:.3f}")
+    p95_speed = _pct(speeds, 0.95)
+    rel_thresh = 0.15 * p95_speed
+    rel_frac = sum(1 for s in speeds if s < rel_thresh) / n
+    print("---- 速度 (supervisor 单位, 非 0~1 命令值) ----")
+    print(f"  mean={sum(speeds)/n:.3f}  median={_pct(speeds,0.5):.3f}  "
+          f"p95={p95_speed:.3f}  max={max(speeds):.3f}")
+    print(f"  行进中均速(>0.05)={sum(moving)/len(moving) if moving else 0:.3f}")
+    print(f"  近停占比: <0.3={frac_lt(0.3):.2f}  <0.05={frac_lt(0.05):.2f}   "
+          f"相对爬行(<15%p95={rel_thresh:.2f})={rel_frac:.2f}")
+    print(f"  速度剖面(10段均速): {' '.join(f'{v:.2f}' for v in profile)}")
+    crawl = _longest_low_speed(frames, 0.3)
+    if crawl and crawl["dur"] > 1.0:
+        print(f"  最长爬行段(<0.3): {crawl['dur']:.1f}s  "
+              f"t={crawl['t0']:.1f}→{crawl['t1']:.1f}  "
+              f"x={crawl['x0']:.1f},y={crawl['y0']:.1f} → x={crawl['x1']:.1f},y={crawl['y1']:.1f}")
+    print("---- 事件 ----")
+    if events:
+        for t, ev in events[:20]:
+            print(f"  t={t}: {ev}")
+        if len(events) > 20:
+            print(f"  ... 共 {len(events)} 条事件")
     else:
-        print_report(analysis)
+        print("  （无 checkpoint/碰撞等事件）")
+    print("================================================")
     return 0
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    raise SystemExit(main())
