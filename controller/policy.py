@@ -66,7 +66,7 @@ def _signed_power(value: float, power: float) -> float:
 def _control_signals(track: TrackState, profile: dict) -> dict:
     """计算策略使用的风险分量。
 
-    功能：拆分弯道、偏移、置信度和丢线风险。
+    功能：拆分弯道、偏移、置信度和丢线风险，并计算预判弯道信号。
     参数：`track` 是赛道状态，`profile` 是控制参数。
     返回：包含各类风险和综合风险的字典。
     逻辑：速度和模式选择共享这些风险，避免重复估算。
@@ -85,6 +85,12 @@ def _control_signals(track: TrackState, profile: dict) -> dict:
         0.0,
         1.0,
     )
+    # 预判弯道：综合前方曲率与前瞻误差，用于提前加减速
+    predictive_curve = clamp(
+        max(abs(track.lookahead_error), abs(track.curvature) * 0.7, abs(track.heading_error) * 0.5),
+        0.0,
+        1.0,
+    )
     return {
         "curve_risk": curve_risk,
         "offset_risk": offset_risk,
@@ -92,6 +98,7 @@ def _control_signals(track: TrackState, profile: dict) -> dict:
         "lost_risk": lost_risk,
         "turn_demand": turn_demand,
         "risk": risk,
+        "predictive_curve": predictive_curve,
     }
 
 
@@ -122,10 +129,11 @@ def _select_mode(track: TrackState, signals: dict, timestamp: float, profile: di
 def _target_steering(track: TrackState, signals: dict, mode: str, profile: dict) -> float:
     """计算目标转向。
 
-    功能：把回中项和前瞻项分开组合，并按状态修正。
+    功能：把回中项和前瞻项分开组合，加入赛车线偏置，并按状态修正。
     参数：`track` 是赛道状态，`signals` 是风险分量，`mode` 是内部驾驶状态。
     返回：裁剪到 `[-1, 1]` 的目标转向。
     逻辑：偏移大时更看近处，弯道明显时更看前方；两者冲突时优先回中。
+    赛车线偏置：弯道前向外侧偏移以拉宽入弯角度，让自然回中力在弯心把车带到内线。
     """
 
     center_term = track.lateral_error * profile["gain_lateral"]
@@ -145,6 +153,17 @@ def _target_steering(track: TrackState, signals: dict, mode: str, profile: dict)
     raw = near_weight * center_term + far_weight * lookahead_term
     raw += profile["gain_lateral_nonlinear"] * _signed_power(track.lateral_error, 1.7)
     raw += profile["gain_curve_nonlinear"] * _signed_power(track.curvature, 1.5)
+
+    # 赛车线偏置：根据曲率和前瞻误差向弯道外侧偏移
+    # 右弯 (正曲率) → 偏左 (负偏置) → 更宽入弯角度
+    # 左弯 (负曲率) → 偏右 (正偏置) → 更宽入弯角度
+    racing_line_gain = profile.get("racing_line_gain", 0.0)
+    racing_line_lookahead_gain = profile.get("racing_line_lookahead_gain", 0.0)
+    if racing_line_gain != 0.0 or racing_line_lookahead_gain != 0.0:
+        racing_bias = -track.curvature * racing_line_gain - track.lookahead_error * racing_line_lookahead_gain
+        # 只在弯道风险明显时施加偏置，直道上不干扰
+        bias_weight = clamp(signals["curve_risk"] * 1.5, 0.0, 1.0)
+        raw += racing_bias * bias_weight
 
     if mode == "lost":
         raw = 0.75 * _LAST_STEERING + 0.25 * _LAST_GOOD_BIAS
@@ -193,10 +212,10 @@ def _smooth_steering(target: float, mode: str, timestamp: float, profile: dict) 
 def _target_speed(track: TrackState, signals: dict, mode: str, steering: float, timestamp: float, profile: dict) -> float:
     """计算目标速度。
 
-    功能：用乘法降速组合弯道、偏移、置信度和转向风险。
+    功能：用乘法降速组合弯道、偏移、置信度和转向风险，并加入预判式加减速。
     参数：`track` 是赛道状态，`signals` 是风险分量，`mode` 是内部状态，`steering` 是当前转向。
     返回：目标速度比例。
-    逻辑：模式只限制速度上限，正常速度由风险因子相乘得到。
+    逻辑：fastest 模式下弯道速度渐进式缩放而非硬上限；预判信号让加减速更提前。
     """
 
     if mode == "lost":
@@ -206,21 +225,63 @@ def _target_speed(track: TrackState, signals: dict, mode: str, steering: float, 
     offset_factor = 1.0 - profile["offset_slowdown"] * (signals["offset_risk"] ** profile["offset_power"])
     confidence_factor = profile["min_confidence_factor"] + (1.0 - profile["min_confidence_factor"]) * track.confidence
     steering_factor = 1.0 - profile["steering_slowdown"] * (abs(steering) ** profile["steering_power"])
-    target = profile["base_speed"] * curve_factor * offset_factor * confidence_factor * steering_factor
+
+    # 预判式减速：前方弯道明显时提前降速
+    predictive_brake = profile.get("predictive_brake_gain", 0.0)
+    predictive_factor = 1.0
+    if predictive_brake > 0.0 and signals["predictive_curve"] > 0.05:
+        predictive_factor = 1.0 - predictive_brake * signals["predictive_curve"]
+
+    target = (
+        profile["base_speed"]
+        * curve_factor
+        * offset_factor
+        * confidence_factor
+        * steering_factor
+        * predictive_factor
+    )
 
     if mode == "recovering":
         target = min(target, profile["recovery_speed"])
     elif mode == "hard_turn":
-        centered_bonus = (
-            profile["hard_turn_center_speed_bonus"]
-            * (1.0 - signals["offset_risk"])
-            * track.confidence
-        )
-        target = min(target, profile["hard_turn_speed"] + centered_bonus)
+        if profile.get("progressive_turn", False):
+            # 渐进式弯道限速：缓弯更接近 base_speed，急弯才降到 hard_turn_speed
+            turn_severity = clamp(
+                (signals["curve_risk"] - profile["hard_turn_threshold"])
+                / max(1.0 - profile["hard_turn_threshold"], 0.01),
+                0.0,
+                1.0,
+            )
+            progressive_limit = profile["hard_turn_speed"] + (
+                profile["base_speed"] - profile["hard_turn_speed"]
+            ) * (1.0 - turn_severity)
+            # 居中且高置信时额外提速奖励
+            centered_bonus = (
+                profile["hard_turn_center_speed_bonus"]
+                * (1.0 - signals["offset_risk"])
+                * track.confidence
+            )
+            target = min(target, progressive_limit + centered_bonus)
+        else:
+            # 传统硬上限模式（safe）
+            centered_bonus = (
+                profile["hard_turn_center_speed_bonus"]
+                * (1.0 - signals["offset_risk"])
+                * track.confidence
+            )
+            target = min(target, profile["hard_turn_speed"] + centered_bonus)
     elif mode == "correcting":
         target = min(target, profile["correction_speed"])
     if timestamp < profile["start_caution_seconds"]:
         target = min(target, profile["start_speed"])
+
+    # 预判式加速：前方弯道消退时提前恢复速度
+    # 仅在巡航或回中状态下提前加速，不在丢线/恢复/急弯中生效
+    predictive_accel = profile.get("predictive_accel_gain", 0.0)
+    if predictive_accel > 0.0 and signals["predictive_curve"] < 0.3 and mode in ("cruise", "correcting"):
+        accel_bonus = predictive_accel * (1.0 - signals["predictive_curve"]) * track.confidence
+        target = min(target + accel_bonus, profile["max_speed"])
+
     return clamp(target, profile["min_speed"], profile["max_speed"])
 
 

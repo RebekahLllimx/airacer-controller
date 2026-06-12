@@ -7,7 +7,6 @@
 
 from dataclasses import dataclass
 
-import cv2
 import numpy as np
 
 from controller.common import PerceptionObs, clamp
@@ -53,11 +52,11 @@ def _valid_image(image) -> bool:
 
 
 def _road_color_from_patch(lab_roi: np.ndarray) -> np.ndarray:
-    """估计道路表面 Lab 颜色。
+    """估计道路表面颜色。
 
     功能：从 ROI 底部中心 patch 估计道路颜色。
-    参数：`lab_roi` 是中下部 ROI 的 Lab 图像。
-    返回：三通道 Lab 中位数颜色。
+    参数：`lab_roi` 是中下部 ROI 的三通道图像。
+    返回：三通道中位数颜色。
     逻辑：中位数能降低车道线、阴影和零星高光对颜色估计的影响。
     """
 
@@ -71,10 +70,80 @@ def _road_color_from_patch(lab_roi: np.ndarray) -> np.ndarray:
     return np.median(patch.reshape(-1, 3).astype(np.float32), axis=0)
 
 
+def _bgr_to_gray(image: np.ndarray) -> np.ndarray:
+    """用 numpy 计算 BGR 灰度图，避免依赖 OpenCV。"""
+
+    bgr = image.astype(np.float32)
+    return (0.114 * bgr[:, :, 0] + 0.587 * bgr[:, :, 1] + 0.299 * bgr[:, :, 2]).astype(np.float32)
+
+
+def _bgr_saturation(image: np.ndarray) -> np.ndarray:
+    """返回近似 HSV 饱和度，范围为 0..255。"""
+
+    bgr = image.astype(np.float32)
+    max_c = np.max(bgr, axis=2)
+    min_c = np.min(bgr, axis=2)
+    saturation = np.zeros_like(max_c, dtype=np.float32)
+    np.divide((max_c - min_c) * 255.0, max_c, out=saturation, where=max_c > 1.0)
+    return saturation
+
+
+def _shift_bool(mask: np.ndarray, dy: int, dx: int, fill: bool) -> np.ndarray:
+    """平移布尔 mask，超出边界部分用 fill 补齐。"""
+
+    height, width = mask.shape
+    shifted = np.full((height, width), fill, dtype=bool)
+    src_y0 = max(0, -dy)
+    src_y1 = min(height, height - dy)
+    src_x0 = max(0, -dx)
+    src_x1 = min(width, width - dx)
+    dst_y0 = max(0, dy)
+    dst_y1 = min(height, height + dy)
+    dst_x0 = max(0, dx)
+    dst_x1 = min(width, width + dx)
+    if src_y0 < src_y1 and src_x0 < src_x1:
+        shifted[dst_y0:dst_y1, dst_x0:dst_x1] = mask[src_y0:src_y1, src_x0:src_x1]
+    return shifted
+
+
+def _morph_erode(mask: np.ndarray, radius: int = 2) -> np.ndarray:
+    """小核腐蚀，用于清理孤立噪声。"""
+
+    active = mask.astype(bool)
+    result = active.copy()
+    for dy in range(-radius, radius + 1):
+        for dx in range(-radius, radius + 1):
+            result &= _shift_bool(active, dy, dx, False)
+    return result
+
+
+def _morph_dilate(mask: np.ndarray, radius: int = 2) -> np.ndarray:
+    """小核膨胀，用于补齐道路 mask 的细缝。"""
+
+    active = mask.astype(bool)
+    result = active.copy()
+    for dy in range(-radius, radius + 1):
+        for dx in range(-radius, radius + 1):
+            result |= _shift_bool(active, dy, dx, False)
+    return result
+
+
+def _edge_mask_from_gray(gray_roi: np.ndarray) -> np.ndarray:
+    """基于灰度梯度生成边缘 fallback mask。"""
+
+    grad_x = np.zeros_like(gray_roi, dtype=np.float32)
+    grad_y = np.zeros_like(gray_roi, dtype=np.float32)
+    grad_x[:, 1:] = np.abs(gray_roi[:, 1:] - gray_roi[:, :-1])
+    grad_y[1:, :] = np.abs(gray_roi[1:, :] - gray_roi[:-1, :])
+    grad = grad_x + grad_y
+    threshold = max(18.0, float(np.percentile(grad, 88.0)))
+    return grad >= threshold
+
+
 def _build_masks(image: np.ndarray) -> tuple[np.ndarray, np.ndarray, float, float]:
     """生成道路表面 mask 和边缘 fallback mask。
 
-    功能：优先用暗灰低饱和特征分割沥青路面，并单独保留 Canny 边缘作为兜底。
+    功能：优先用暗灰低饱和特征分割沥青路面，并单独保留梯度边缘作为兜底。
     参数：`image` 是单张 BGR 图像。
     返回：完整尺寸的 `road_mask`、`edge_mask`、灰度纹理分数和主 mask 命中率。
     逻辑：暗灰 mask 可避免偏离赛道时把底部中心的草地当道路；边缘不混入主 mask，
@@ -85,18 +154,18 @@ def _build_masks(image: np.ndarray) -> tuple[np.ndarray, np.ndarray, float, floa
     top = int(height * VISION_PROFILE["roi_top_ratio"])
     roi = image[top:, :, :]
 
-    gray_roi = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
-    hsv_roi = cv2.cvtColor(roi, cv2.COLOR_BGR2HSV)
+    gray_roi = _bgr_to_gray(roi)
+    saturation_roi = _bgr_saturation(roi)
     dark_road_roi = (
         (gray_roi >= VISION_PROFILE["road_gray_min"])
         & (gray_roi <= VISION_PROFILE["road_gray_max"])
-        & (hsv_roi[:, :, 1] <= VISION_PROFILE["road_sat_max"])
-    ).astype(np.uint8) * 255
+        & (saturation_roi <= VISION_PROFILE["road_sat_max"])
+    )
 
-    lab_roi = cv2.cvtColor(roi, cv2.COLOR_BGR2LAB).astype(np.float32)
-    road_lab = _road_color_from_patch(lab_roi)
-    distance = np.sqrt(np.sum((lab_roi - road_lab) ** 2, axis=2))
-    color_roi = (distance <= VISION_PROFILE["road_lab_threshold"]).astype(np.uint8) * 255
+    color_roi_source = roi.astype(np.float32)
+    road_color = _road_color_from_patch(color_roi_source)
+    distance = np.sqrt(np.sum((color_roi_source - road_color) ** 2, axis=2))
+    color_roi = distance <= VISION_PROFILE["road_lab_threshold"]
 
     dark_fill_ratio = float(np.count_nonzero(dark_road_roi)) / max(float(dark_road_roi.size), 1.0)
     if dark_fill_ratio >= VISION_PROFILE["dark_mask_min_fill"]:
@@ -104,17 +173,14 @@ def _build_masks(image: np.ndarray) -> tuple[np.ndarray, np.ndarray, float, floa
     else:
         road_roi = color_roi
 
-    kernel = np.ones((5, 5), dtype=np.uint8)
-    road_roi = cv2.morphologyEx(road_roi, cv2.MORPH_OPEN, kernel, iterations=1)
-    road_roi = cv2.morphologyEx(road_roi, cv2.MORPH_CLOSE, kernel, iterations=2)
-
-    blurred = cv2.GaussianBlur(gray_roi, (5, 5), 0)
-    edge_roi = cv2.Canny(blurred, 45, 120)
+    road_roi = _morph_dilate(_morph_erode(road_roi, radius=1), radius=1)
+    road_roi = _morph_dilate(_morph_dilate(road_roi, radius=1), radius=1)
+    edge_roi = _edge_mask_from_gray(gray_roi)
 
     road_mask = np.zeros(image.shape[:2], dtype=np.uint8)
     edge_mask = np.zeros(image.shape[:2], dtype=np.uint8)
-    road_mask[top:, :] = road_roi
-    edge_mask[top:, :] = edge_roi
+    road_mask[top:, :] = road_roi.astype(np.uint8) * 255
+    edge_mask[top:, :] = edge_roi.astype(np.uint8) * 255
 
     texture_score = clamp(float(np.std(gray_roi)) / VISION_PROFILE["texture_gray_std_scale"], 0.0, 1.0)
     mask_fill_ratio = float(np.count_nonzero(road_roi)) / max(float(road_roi.size), 1.0)
@@ -272,10 +338,10 @@ def _score_scan(
         confidence *= valid_count / max(float(min_valid), 1.0)
         debug_flags |= 1
     if mask_fill_ratio < 0.015 or mask_fill_ratio > 0.92:
-        confidence *= 0.25
+        confidence *= 0.50
         debug_flags |= 4
     if fallback_count:
-        confidence *= max(0.55, 1.0 - 0.06 * fallback_count)
+        confidence *= max(0.70, 1.0 - 0.04 * fallback_count)
         debug_flags |= 2
 
     return clamp(confidence, 0.0, 1.0), debug_flags

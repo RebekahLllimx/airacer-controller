@@ -2,7 +2,6 @@
 from dataclasses import dataclass
 import math
 
-import cv2
 import numpy as np
 
 
@@ -98,8 +97,8 @@ def clamp_cmd(cmd: ControlCmd) -> tuple[float, float]:
 """策略参数配置。
 
 功能概述：集中保存视觉、估计和控制策略参数。
-输入输出：输入任意 profile 名称，输出同一套控制参数。
-处理流程：先定义通用感知和估计参数，再定义唯一的 CONTROL 控制参数。
+输入输出：输入 profile 名称（fastest/safe），输出对应控制参数。
+处理流程：fastest 激进追求圈速，safe 保守保证完赛。
 """
 
 VISION_PROFILE = {
@@ -129,7 +128,7 @@ VISION_PROFILE = {
 ESTIMATOR_PROFILE = {
     "image_center_x": 320.0,
     "x_scale": 320.0,
-    "lost_confidence": 0.08,
+    "lost_confidence": 0.05,
     "min_center_points": 3,
     "min_good_points": 8,
     "min_y_span": 30.0,
@@ -160,69 +159,159 @@ ESTIMATOR_PROFILE = {
     "timestamp_reset_gap": 2.0,
 }
 
-CONTROL = {
-    "base_speed": 0.96,
+# ── Fastest：激进圈速策略 ──────────────────────────────────────────────
+# 目标：最短单圈时间。直道极速、弯道少减速、出弯快加速、赛车线走线。
+
+CONTROL_FASTEST = {
+    # ── 速度基础 ──
+    "base_speed": 1.00,
     "max_speed": 1.00,
-    "min_speed": 0.16,
-    "start_caution_seconds": 0.8,
-    "start_speed": 0.36,
-    "lost_confidence": 0.10,
-    "recovery_confidence": 0.28,
-    "lost_speed": 0.24,
-    "recovery_speed": 0.38,
-    "hard_turn_speed": 0.30,
-    "hard_turn_center_speed_bonus": 0.30,
-    "correction_speed": 0.50,
-    "hard_turn_threshold": 0.20,
-    "correction_error": 0.25,
-    "recovery_frames": 4,
-    "risk_curve_weight": 0.42,
-    "risk_offset_weight": 0.28,
+    "min_speed": 0.18,
+    "start_caution_seconds": 0.4,
+    "start_speed": 0.55,
+    # ── 丢线与恢复 ──
+    "lost_confidence": 0.06,
+    "recovery_confidence": 0.15,
+    "lost_speed": 0.34,
+    "recovery_speed": 0.62,
+    "recovery_frames": 2,
+    # ── 弯道速度（渐进式） ──
+    "hard_turn_speed": 0.40,
+    "hard_turn_center_speed_bonus": 0.35,
+    "correction_speed": 0.58,
+    "hard_turn_threshold": 0.22,
+    "correction_error": 0.22,
+    "progressive_turn": True,
+    # ── 风险权重 ──
+    "risk_curve_weight": 0.44,
+    "risk_offset_weight": 0.26,
     "risk_confidence_weight": 0.22,
     "risk_lost_weight": 0.80,
-    "near_weight_base": 0.90,
+    # ── 转向近/远项权重 ──
+    "near_weight_base": 0.95,
     "near_weight_offset_boost": 0.55,
-    "far_weight_base": 0.75,
+    "far_weight_base": 0.70,
     "far_weight_curve_boost": 0.45,
-    "far_conflict_offset_scale": 3.20,
-    "far_conflict_min_scale": 0.05,
-    "gain_lateral": 0.65,
-    "gain_lookahead": 0.90,
-    "gain_heading": 0.98,
-    "gain_curve": 0.25,
-    "gain_lateral_nonlinear": 0.18,
-    "gain_curve_nonlinear": 0.04,
-    "steering_deadzone": 0.015,
-    "curve_slowdown": 0.66,
+    "far_conflict_offset_scale": 3.40,
+    "far_conflict_min_scale": 0.04,
+    # ── 转向增益 ──
+    "gain_lateral": 0.72,
+    "gain_lookahead": 1.00,
+    "gain_heading": 1.05,
+    "gain_curve": 0.28,
+    "gain_lateral_nonlinear": 0.22,
+    "gain_curve_nonlinear": 0.05,
+    "steering_deadzone": 0.012,
+    # ── 赛车线 ──
+    "racing_line_gain": 0.08,
+    "racing_line_lookahead_gain": 0.05,
+    # ── 速度降幅因子 ──
+    "curve_slowdown": 0.55,
     "curve_power": 1.35,
-    "offset_slowdown": 0.38,
+    "offset_slowdown": 0.30,
     "offset_power": 1.25,
     "min_confidence_factor": 0.58,
-    "steering_slowdown": 0.28,
+    "steering_slowdown": 0.24,
     "steering_power": 1.15,
-    "steering_smoothing_cruise": 0.16,
-    "steering_smoothing_turn": 0.14,
-    "steering_smoothing_correction": 0.14,
-    "steering_smoothing_recovery": 0.28,
-    "max_steering_delta": 0.46,
-    "max_speed_increase_per_sec": 1.60,
-    "max_speed_decrease_per_sec": 2.20,
+    # ── 转向平滑（更快响应但更稳定） ──
+    "steering_smoothing_cruise": 0.12,
+    "steering_smoothing_turn": 0.12,
+    "steering_smoothing_correction": 0.12,
+    "steering_smoothing_recovery": 0.26,
+    "max_steering_delta": 0.50,
+    # ── 加减速变化率 ──
+    "max_speed_increase_per_sec": 2.0,
+    "max_speed_decrease_per_sec": 3.8,
     "nominal_dt": 0.032,
     "timestamp_reset_gap": 2.0,
+    # ── 预判式速度 ──
+    "predictive_brake_gain": 0.30,
+    "predictive_accel_gain": 0.15,
+}
+
+# ── Safe：稳健多车策略 ─────────────────────────────────────────────────
+# 目标：保证完赛、减少碰撞。弯道保守、丢失时迅速降速、不追求极限走线。
+
+CONTROL_SAFE = {
+    # ── 速度基础 ──
+    "base_speed": 0.88,
+    "max_speed": 0.92,
+    "min_speed": 0.14,
+    "start_caution_seconds": 1.0,
+    "start_speed": 0.32,
+    # ── 丢线与恢复 ──
+    "lost_confidence": 0.08,
+    "recovery_confidence": 0.24,
+    "lost_speed": 0.20,
+    "recovery_speed": 0.34,
+    "recovery_frames": 6,
+    # ── 弯道速度（硬上限） ──
+    "hard_turn_speed": 0.26,
+    "hard_turn_center_speed_bonus": 0.20,
+    "correction_speed": 0.42,
+    "hard_turn_threshold": 0.18,
+    "correction_error": 0.28,
+    "progressive_turn": False,
+    # ── 风险权重（置信度权重更高） ──
+    "risk_curve_weight": 0.38,
+    "risk_offset_weight": 0.26,
+    "risk_confidence_weight": 0.30,
+    "risk_lost_weight": 0.90,
+    # ── 转向近/远项权重（更偏近处） ──
+    "near_weight_base": 1.00,
+    "near_weight_offset_boost": 0.60,
+    "far_weight_base": 0.60,
+    "far_weight_curve_boost": 0.35,
+    "far_conflict_offset_scale": 3.80,
+    "far_conflict_min_scale": 0.03,
+    # ── 转向增益 ──
+    "gain_lateral": 0.60,
+    "gain_lookahead": 0.80,
+    "gain_heading": 0.88,
+    "gain_curve": 0.20,
+    "gain_lateral_nonlinear": 0.14,
+    "gain_curve_nonlinear": 0.03,
+    "steering_deadzone": 0.018,
+    # ── 赛车线（关闭） ──
+    "racing_line_gain": 0.0,
+    "racing_line_lookahead_gain": 0.0,
+    # ── 速度降幅因子（更保守） ──
+    "curve_slowdown": 0.72,
+    "curve_power": 1.40,
+    "offset_slowdown": 0.42,
+    "offset_power": 1.30,
+    "min_confidence_factor": 0.50,
+    "steering_slowdown": 0.32,
+    "steering_power": 1.20,
+    # ── 转向平滑（更稳定） ──
+    "steering_smoothing_cruise": 0.20,
+    "steering_smoothing_turn": 0.18,
+    "steering_smoothing_correction": 0.18,
+    "steering_smoothing_recovery": 0.32,
+    "max_steering_delta": 0.38,
+    # ── 加减速变化率（更平缓） ──
+    "max_speed_increase_per_sec": 1.2,
+    "max_speed_decrease_per_sec": 2.5,
+    "nominal_dt": 0.032,
+    "timestamp_reset_gap": 2.0,
+    # ── 预判式速度（关闭） ──
+    "predictive_brake_gain": 0.0,
+    "predictive_accel_gain": 0.0,
 }
 
 
 def get_profile(name: str) -> dict:
     """读取控制 profile。
 
-    功能：为顶层控制器提供当前唯一维护的控制参数。
-    参数：`name` 保留兼容构建脚本和提交文件中的 fastest/safe 标记。
-    返回：`CONTROL` 参数字典的浅拷贝。
-    逻辑：所有模式都返回同一套参数，便于先集中优化一个目标。
+    功能：为顶层控制器提供 fastest 或 safe 对应的控制参数。
+    参数：`name` 为 "fastest" 或 "safe"。
+    返回：对应参数字典的浅拷贝。
+    逻辑：非法模式回退 fastest。
     """
 
-    del name
-    return dict(CONTROL)
+    if name == "safe":
+        return dict(CONTROL_SAFE)
+    return dict(CONTROL_FASTEST)
 
 
 
@@ -278,11 +367,11 @@ def _valid_image(image) -> bool:
 
 
 def _road_color_from_patch(lab_roi: np.ndarray) -> np.ndarray:
-    """估计道路表面 Lab 颜色。
+    """估计道路表面颜色。
 
     功能：从 ROI 底部中心 patch 估计道路颜色。
-    参数：`lab_roi` 是中下部 ROI 的 Lab 图像。
-    返回：三通道 Lab 中位数颜色。
+    参数：`lab_roi` 是中下部 ROI 的三通道图像。
+    返回：三通道中位数颜色。
     逻辑：中位数能降低车道线、阴影和零星高光对颜色估计的影响。
     """
 
@@ -296,10 +385,80 @@ def _road_color_from_patch(lab_roi: np.ndarray) -> np.ndarray:
     return np.median(patch.reshape(-1, 3).astype(np.float32), axis=0)
 
 
+def _bgr_to_gray(image: np.ndarray) -> np.ndarray:
+    """用 numpy 计算 BGR 灰度图，避免依赖 OpenCV。"""
+
+    bgr = image.astype(np.float32)
+    return (0.114 * bgr[:, :, 0] + 0.587 * bgr[:, :, 1] + 0.299 * bgr[:, :, 2]).astype(np.float32)
+
+
+def _bgr_saturation(image: np.ndarray) -> np.ndarray:
+    """返回近似 HSV 饱和度，范围为 0..255。"""
+
+    bgr = image.astype(np.float32)
+    max_c = np.max(bgr, axis=2)
+    min_c = np.min(bgr, axis=2)
+    saturation = np.zeros_like(max_c, dtype=np.float32)
+    np.divide((max_c - min_c) * 255.0, max_c, out=saturation, where=max_c > 1.0)
+    return saturation
+
+
+def _shift_bool(mask: np.ndarray, dy: int, dx: int, fill: bool) -> np.ndarray:
+    """平移布尔 mask，超出边界部分用 fill 补齐。"""
+
+    height, width = mask.shape
+    shifted = np.full((height, width), fill, dtype=bool)
+    src_y0 = max(0, -dy)
+    src_y1 = min(height, height - dy)
+    src_x0 = max(0, -dx)
+    src_x1 = min(width, width - dx)
+    dst_y0 = max(0, dy)
+    dst_y1 = min(height, height + dy)
+    dst_x0 = max(0, dx)
+    dst_x1 = min(width, width + dx)
+    if src_y0 < src_y1 and src_x0 < src_x1:
+        shifted[dst_y0:dst_y1, dst_x0:dst_x1] = mask[src_y0:src_y1, src_x0:src_x1]
+    return shifted
+
+
+def _morph_erode(mask: np.ndarray, radius: int = 2) -> np.ndarray:
+    """小核腐蚀，用于清理孤立噪声。"""
+
+    active = mask.astype(bool)
+    result = active.copy()
+    for dy in range(-radius, radius + 1):
+        for dx in range(-radius, radius + 1):
+            result &= _shift_bool(active, dy, dx, False)
+    return result
+
+
+def _morph_dilate(mask: np.ndarray, radius: int = 2) -> np.ndarray:
+    """小核膨胀，用于补齐道路 mask 的细缝。"""
+
+    active = mask.astype(bool)
+    result = active.copy()
+    for dy in range(-radius, radius + 1):
+        for dx in range(-radius, radius + 1):
+            result |= _shift_bool(active, dy, dx, False)
+    return result
+
+
+def _edge_mask_from_gray(gray_roi: np.ndarray) -> np.ndarray:
+    """基于灰度梯度生成边缘 fallback mask。"""
+
+    grad_x = np.zeros_like(gray_roi, dtype=np.float32)
+    grad_y = np.zeros_like(gray_roi, dtype=np.float32)
+    grad_x[:, 1:] = np.abs(gray_roi[:, 1:] - gray_roi[:, :-1])
+    grad_y[1:, :] = np.abs(gray_roi[1:, :] - gray_roi[:-1, :])
+    grad = grad_x + grad_y
+    threshold = max(18.0, float(np.percentile(grad, 88.0)))
+    return grad >= threshold
+
+
 def _build_masks(image: np.ndarray) -> tuple[np.ndarray, np.ndarray, float, float]:
     """生成道路表面 mask 和边缘 fallback mask。
 
-    功能：优先用暗灰低饱和特征分割沥青路面，并单独保留 Canny 边缘作为兜底。
+    功能：优先用暗灰低饱和特征分割沥青路面，并单独保留梯度边缘作为兜底。
     参数：`image` 是单张 BGR 图像。
     返回：完整尺寸的 `road_mask`、`edge_mask`、灰度纹理分数和主 mask 命中率。
     逻辑：暗灰 mask 可避免偏离赛道时把底部中心的草地当道路；边缘不混入主 mask，
@@ -310,18 +469,18 @@ def _build_masks(image: np.ndarray) -> tuple[np.ndarray, np.ndarray, float, floa
     top = int(height * VISION_PROFILE["roi_top_ratio"])
     roi = image[top:, :, :]
 
-    gray_roi = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
-    hsv_roi = cv2.cvtColor(roi, cv2.COLOR_BGR2HSV)
+    gray_roi = _bgr_to_gray(roi)
+    saturation_roi = _bgr_saturation(roi)
     dark_road_roi = (
         (gray_roi >= VISION_PROFILE["road_gray_min"])
         & (gray_roi <= VISION_PROFILE["road_gray_max"])
-        & (hsv_roi[:, :, 1] <= VISION_PROFILE["road_sat_max"])
-    ).astype(np.uint8) * 255
+        & (saturation_roi <= VISION_PROFILE["road_sat_max"])
+    )
 
-    lab_roi = cv2.cvtColor(roi, cv2.COLOR_BGR2LAB).astype(np.float32)
-    road_lab = _road_color_from_patch(lab_roi)
-    distance = np.sqrt(np.sum((lab_roi - road_lab) ** 2, axis=2))
-    color_roi = (distance <= VISION_PROFILE["road_lab_threshold"]).astype(np.uint8) * 255
+    color_roi_source = roi.astype(np.float32)
+    road_color = _road_color_from_patch(color_roi_source)
+    distance = np.sqrt(np.sum((color_roi_source - road_color) ** 2, axis=2))
+    color_roi = distance <= VISION_PROFILE["road_lab_threshold"]
 
     dark_fill_ratio = float(np.count_nonzero(dark_road_roi)) / max(float(dark_road_roi.size), 1.0)
     if dark_fill_ratio >= VISION_PROFILE["dark_mask_min_fill"]:
@@ -329,17 +488,14 @@ def _build_masks(image: np.ndarray) -> tuple[np.ndarray, np.ndarray, float, floa
     else:
         road_roi = color_roi
 
-    kernel = np.ones((5, 5), dtype=np.uint8)
-    road_roi = cv2.morphologyEx(road_roi, cv2.MORPH_OPEN, kernel, iterations=1)
-    road_roi = cv2.morphologyEx(road_roi, cv2.MORPH_CLOSE, kernel, iterations=2)
-
-    blurred = cv2.GaussianBlur(gray_roi, (5, 5), 0)
-    edge_roi = cv2.Canny(blurred, 45, 120)
+    road_roi = _morph_dilate(_morph_erode(road_roi, radius=1), radius=1)
+    road_roi = _morph_dilate(_morph_dilate(road_roi, radius=1), radius=1)
+    edge_roi = _edge_mask_from_gray(gray_roi)
 
     road_mask = np.zeros(image.shape[:2], dtype=np.uint8)
     edge_mask = np.zeros(image.shape[:2], dtype=np.uint8)
-    road_mask[top:, :] = road_roi
-    edge_mask[top:, :] = edge_roi
+    road_mask[top:, :] = road_roi.astype(np.uint8) * 255
+    edge_mask[top:, :] = edge_roi.astype(np.uint8) * 255
 
     texture_score = clamp(float(np.std(gray_roi)) / VISION_PROFILE["texture_gray_std_scale"], 0.0, 1.0)
     mask_fill_ratio = float(np.count_nonzero(road_roi)) / max(float(road_roi.size), 1.0)
@@ -497,10 +653,10 @@ def _score_scan(
         confidence *= valid_count / max(float(min_valid), 1.0)
         debug_flags |= 1
     if mask_fill_ratio < 0.015 or mask_fill_ratio > 0.92:
-        confidence *= 0.25
+        confidence *= 0.50
         debug_flags |= 4
     if fallback_count:
-        confidence *= max(0.55, 1.0 - 0.06 * fallback_count)
+        confidence *= max(0.70, 1.0 - 0.04 * fallback_count)
         debug_flags |= 2
 
     return clamp(confidence, 0.0, 1.0), debug_flags
@@ -1021,7 +1177,7 @@ def _signed_power(value: float, power: float) -> float:
 def _control_signals(track: TrackState, profile: dict) -> dict:
     """计算策略使用的风险分量。
 
-    功能：拆分弯道、偏移、置信度和丢线风险。
+    功能：拆分弯道、偏移、置信度和丢线风险，并计算预判弯道信号。
     参数：`track` 是赛道状态，`profile` 是控制参数。
     返回：包含各类风险和综合风险的字典。
     逻辑：速度和模式选择共享这些风险，避免重复估算。
@@ -1040,6 +1196,12 @@ def _control_signals(track: TrackState, profile: dict) -> dict:
         0.0,
         1.0,
     )
+    # 预判弯道：综合前方曲率与前瞻误差，用于提前加减速
+    predictive_curve = clamp(
+        max(abs(track.lookahead_error), abs(track.curvature) * 0.7, abs(track.heading_error) * 0.5),
+        0.0,
+        1.0,
+    )
     return {
         "curve_risk": curve_risk,
         "offset_risk": offset_risk,
@@ -1047,6 +1209,7 @@ def _control_signals(track: TrackState, profile: dict) -> dict:
         "lost_risk": lost_risk,
         "turn_demand": turn_demand,
         "risk": risk,
+        "predictive_curve": predictive_curve,
     }
 
 
@@ -1077,10 +1240,11 @@ def _select_mode(track: TrackState, signals: dict, timestamp: float, profile: di
 def _target_steering(track: TrackState, signals: dict, mode: str, profile: dict) -> float:
     """计算目标转向。
 
-    功能：把回中项和前瞻项分开组合，并按状态修正。
+    功能：把回中项和前瞻项分开组合，加入赛车线偏置，并按状态修正。
     参数：`track` 是赛道状态，`signals` 是风险分量，`mode` 是内部驾驶状态。
     返回：裁剪到 `[-1, 1]` 的目标转向。
     逻辑：偏移大时更看近处，弯道明显时更看前方；两者冲突时优先回中。
+    赛车线偏置：弯道前向外侧偏移以拉宽入弯角度，让自然回中力在弯心把车带到内线。
     """
 
     center_term = track.lateral_error * profile["gain_lateral"]
@@ -1100,6 +1264,17 @@ def _target_steering(track: TrackState, signals: dict, mode: str, profile: dict)
     raw = near_weight * center_term + far_weight * lookahead_term
     raw += profile["gain_lateral_nonlinear"] * _signed_power(track.lateral_error, 1.7)
     raw += profile["gain_curve_nonlinear"] * _signed_power(track.curvature, 1.5)
+
+    # 赛车线偏置：根据曲率和前瞻误差向弯道外侧偏移
+    # 右弯 (正曲率) → 偏左 (负偏置) → 更宽入弯角度
+    # 左弯 (负曲率) → 偏右 (正偏置) → 更宽入弯角度
+    racing_line_gain = profile.get("racing_line_gain", 0.0)
+    racing_line_lookahead_gain = profile.get("racing_line_lookahead_gain", 0.0)
+    if racing_line_gain != 0.0 or racing_line_lookahead_gain != 0.0:
+        racing_bias = -track.curvature * racing_line_gain - track.lookahead_error * racing_line_lookahead_gain
+        # 只在弯道风险明显时施加偏置，直道上不干扰
+        bias_weight = clamp(signals["curve_risk"] * 1.5, 0.0, 1.0)
+        raw += racing_bias * bias_weight
 
     if mode == "lost":
         raw = 0.75 * _LAST_STEERING + 0.25 * _LAST_GOOD_BIAS
@@ -1148,10 +1323,10 @@ def _smooth_steering(target: float, mode: str, timestamp: float, profile: dict) 
 def _target_speed(track: TrackState, signals: dict, mode: str, steering: float, timestamp: float, profile: dict) -> float:
     """计算目标速度。
 
-    功能：用乘法降速组合弯道、偏移、置信度和转向风险。
+    功能：用乘法降速组合弯道、偏移、置信度和转向风险，并加入预判式加减速。
     参数：`track` 是赛道状态，`signals` 是风险分量，`mode` 是内部状态，`steering` 是当前转向。
     返回：目标速度比例。
-    逻辑：模式只限制速度上限，正常速度由风险因子相乘得到。
+    逻辑：fastest 模式下弯道速度渐进式缩放而非硬上限；预判信号让加减速更提前。
     """
 
     if mode == "lost":
@@ -1161,21 +1336,63 @@ def _target_speed(track: TrackState, signals: dict, mode: str, steering: float, 
     offset_factor = 1.0 - profile["offset_slowdown"] * (signals["offset_risk"] ** profile["offset_power"])
     confidence_factor = profile["min_confidence_factor"] + (1.0 - profile["min_confidence_factor"]) * track.confidence
     steering_factor = 1.0 - profile["steering_slowdown"] * (abs(steering) ** profile["steering_power"])
-    target = profile["base_speed"] * curve_factor * offset_factor * confidence_factor * steering_factor
+
+    # 预判式减速：前方弯道明显时提前降速
+    predictive_brake = profile.get("predictive_brake_gain", 0.0)
+    predictive_factor = 1.0
+    if predictive_brake > 0.0 and signals["predictive_curve"] > 0.05:
+        predictive_factor = 1.0 - predictive_brake * signals["predictive_curve"]
+
+    target = (
+        profile["base_speed"]
+        * curve_factor
+        * offset_factor
+        * confidence_factor
+        * steering_factor
+        * predictive_factor
+    )
 
     if mode == "recovering":
         target = min(target, profile["recovery_speed"])
     elif mode == "hard_turn":
-        centered_bonus = (
-            profile["hard_turn_center_speed_bonus"]
-            * (1.0 - signals["offset_risk"])
-            * track.confidence
-        )
-        target = min(target, profile["hard_turn_speed"] + centered_bonus)
+        if profile.get("progressive_turn", False):
+            # 渐进式弯道限速：缓弯更接近 base_speed，急弯才降到 hard_turn_speed
+            turn_severity = clamp(
+                (signals["curve_risk"] - profile["hard_turn_threshold"])
+                / max(1.0 - profile["hard_turn_threshold"], 0.01),
+                0.0,
+                1.0,
+            )
+            progressive_limit = profile["hard_turn_speed"] + (
+                profile["base_speed"] - profile["hard_turn_speed"]
+            ) * (1.0 - turn_severity)
+            # 居中且高置信时额外提速奖励
+            centered_bonus = (
+                profile["hard_turn_center_speed_bonus"]
+                * (1.0 - signals["offset_risk"])
+                * track.confidence
+            )
+            target = min(target, progressive_limit + centered_bonus)
+        else:
+            # 传统硬上限模式（safe）
+            centered_bonus = (
+                profile["hard_turn_center_speed_bonus"]
+                * (1.0 - signals["offset_risk"])
+                * track.confidence
+            )
+            target = min(target, profile["hard_turn_speed"] + centered_bonus)
     elif mode == "correcting":
         target = min(target, profile["correction_speed"])
     if timestamp < profile["start_caution_seconds"]:
         target = min(target, profile["start_speed"])
+
+    # 预判式加速：前方弯道消退时提前恢复速度
+    # 仅在巡航或回中状态下提前加速，不在丢线/恢复/急弯中生效
+    predictive_accel = profile.get("predictive_accel_gain", 0.0)
+    if predictive_accel > 0.0 and signals["predictive_curve"] < 0.3 and mode in ("cruise", "correcting"):
+        accel_bonus = predictive_accel * (1.0 - signals["predictive_curve"]) * track.confidence
+        target = min(target + accel_bonus, profile["max_speed"])
+
     return clamp(target, profile["min_speed"], profile["max_speed"])
 
 

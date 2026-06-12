@@ -1,3 +1,6 @@
+# Official platform SDK (adjacent repo, not part of controller)
+pkudsa.airacer/
+
 # OS / editor
 .DS_Store
 .vscode/
