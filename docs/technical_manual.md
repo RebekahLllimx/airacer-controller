@@ -144,7 +144,7 @@ lookahead_term × = corner_arrival                                              
 
 - `_smooth_steering`：按模式 EMA 平滑 + 限变化率 + 高速收舵（高速下同样舵角半径更小）。
 - `_target_speed`：以 `base_speed` 为底，**乘法**叠加弯道/横偏/置信/转向/边界余量降速因子；模式给上限；直道提速到 `straight_speed`；发车短时限速。`_smooth_speed` 让加速慢、减速快。
-- `_escape_if_stalled`：顶住栏杆卡死时短暂朝感知到的路面一侧脱困（门槛严格，避免误触发）。
+- `_escape_if_stalled`：顶住栏杆卡死时短暂朝感知到的路面一侧脱困（门槛严格，避免误触发）。单车（`no_other_cars`）用 R049 更保守的脱困参数、且**无倒车相位**；多车（`with_other_cars`）的倒车脱困、force_escape 安全网与光流卡死检测见 §5。
 
 ### 3.5 后置白线修正
 
@@ -162,10 +162,50 @@ final_steering = clamp(steering + line_correction, −1, 1)
 
 ---
 
-## 5. 速查
+## 5. 多车层（`with_other_cars`）：对手感知 / 避让 / 脱困
+
+§1–§4 描述的是单车驱动底座（`no_other_cars` profile）。多车场次在同一条流水线上**叠加一层增量**：感知端多识别近处对手车与画面流动，策略端多出对手减速、主动避让、倒车脱困与 force_escape 安全网。这一整层都由 active profile 的 `enable_opponent` 总开关门控——`no_other_cars` 下 `enable_opponent=False`，这层代码与参数**完全不执行**（见 `CLAUDE.md`「Profile 隔离」），单车退化为纯 R049。
+
+### 5.1 感知端：对手车检测 + 画面流动
+
+`opponent.py` 的 `detect_near_vehicle_obstacle_state(image, profile)`（仅 `enable_opponent` 时被 perception 调用）只看**画面下半部中间**的检测 ROI（`near_obstacle_roi_top/bottom_ratio`、`near_obstacle_roi_x_margin_ratio`），把三类像素并成车身候选：
+
+- **亮白车身**：灰度 > `near_obstacle_white_gray_min` 且饱和度 < `near_obstacle_white_sat_max`；
+- **近黑车身**：灰度 < `near_obstacle_black_gray_max` 且明度 < `near_obstacle_black_value_max`；
+- **官方彩色车身**：`COLOR_PROFILE["car_body_colors"]` 里**高饱和**（`S ≥ 80`）色卡的 HSV 容差。**故意跳过低饱和色卡**——低饱和 HSV 容差过宽，会把 complex 深灰沥青吃成车身（曾导致 `near_obstacle` 长期误真、污染速度与白线门控，见报告 R060→R061）。
+
+候选经形态学开运算去碎，取连通域（面积/宽/高过滤掉车道线噪声）里**最大的一块**，输出 `(near_obstacle, obstacle_x, obstacle_size)`：`obstacle_x∈[−1,1]`（−1 左 / +1 右 / 0 正前）写进 `PerceptionObs`（见 §1.4），`obstacle_size` 是该块占 ROI 的比例（越大通常越近）。
+
+另外，`enable_opponent` 时 perception 计算 `frame_motion`（64×48 下采样灰度的**帧间 MAD**）：高=画面在流动（车在动），低≈静止。它是策略端"光流卡死检测"的唯一输入（`control()` 拿不到真实车速）。`no_other_cars` 下不计算，`frame_motion` 恒为默认 100（卡死检测永不触发）。
+
+### 5.2 策略端：减速 / 避让 / 脱困
+
+都在 `policy.decide_control` / `_target_speed` / `_escape_if_stalled` 里，且都再用 `enable_opponent`（或专属开关）守一道：
+
+**(a) 对手减速**（`_target_speed`）。检测到 `near_obstacle` 时按 `obstacle_x` 的"居中程度"分档减速：正前方挡车 ×`opponent_speed_factor`（更狠），偏侧车辆 ×`opponent_side_speed_factor`（更轻，避免一被超就长期缩在后面）；若同时在弯中（居中且 `curve_risk ≥ opponent_corner_curve_threshold`）再 ×`opponent_corner_speed_factor`（防多车弯道碰撞卡死）。
+
+**(b) 主动避让转向**（`decide_control` 末段）。`near_obstacle` 且未丢线、置信足够时，在**最终舵角**上叠加一个有界偏置 `avoid_bias`（钳到 ±`opponent_avoid_steering_max`），由两部分合成：① `margin_bias` 按左右边界余量差朝**开阔侧**绕行（`opponent_avoid_steering_gain`）；② `direction_bias` 按 `obstacle_x` 朝对手**反侧**让开（仅当 `|obstacle_x|` 超 `opponent_direction_deadzone`）。和后置白线修正一样，它只改最终舵角，不进风险/模式/速度/入弯门控。
+
+**(c) 倒车脱困**（`_escape_if_stalled`）。卡死类脱困（`pinned` 顶栏 / `low_speed` / `boundary` 贴边）先走一个**倒车相位**（输出负速度 `escape_reverse_speed`）拉开距离、改变视野，再前冲；顶栏用 K-turn 反打（`_contact_escape_sign` 朝开阔侧）。倒车帧数被限制为不超过该次脱困总帧的一半。`clamp_cmd` 把速度下界放宽到 −1.0 才使倒车可行：本地 Webots（Driver API）负值即倒车；**线上 sandbox 会把 speed clamp 回 [0,1]**，倒车退化为短暂停顿，脱困逻辑同时保留前进相位作为线上兜底。单车 `no_other_cars` 的倒车帧数全部为 0（无倒车相位）。
+
+**(d) force_escape 安全网**（`decide_control` 最高优先级）。这是兜住所有"几何脱困抓不到"的卡死的总安全网，三个触发任一满足即激活：
+- **A 丢线持续**：`_LOST_STREAK ≥ force_reverse_lost_streak`；
+- **B 指令零速持续**：命令速度 ≤ `force_reverse_zero_speed_threshold` 持续 `force_reverse_zero_speed_frames` 帧（即使不丢线）；
+- **C 光流卡死**：`frame_motion < motion_still_threshold` 且命令速度 ≥ `motion_still_min_cmd_speed` 持续 `motion_still_frames` 帧——这是控制器**唯一**能察觉"撞栏顶住但自以为在巡航"的信号。
+
+激活后先走**领头倒车相位**（净后退，朝边界余量更大的开阔侧 `_margin_escape_sign`，把车整体倒出车堆，占比 ≤ 总帧 0.6）再前冲。整段只在 `enable_opponent` 下执行——这是参数门控之外的**第二道保险**：即使 `no_other_cars` 的参数被误改，总开关关闭也不会在单车里触发倒车脱困。
+
+### 5.3 单车为什么完全不受影响
+
+`NO_OTHER_CARS_CONTROL` 从 `WITH_OTHER_CARS_CONTROL` 派生，只覆盖两类键：(a) escape 用 R049 更保守值；(b) **所有多车增量置禁用**（`enable_opponent=False`、对手增益/倒车帧/卡死阈值全部归零或设为不可达）。加上 §5.1/§5.2 的管线开关，多车层在单车下是"参数禁用 + 代码不走"的双保险。`tests/test_profile_isolation.py` 锁定这条铁律。
+
+---
+
+## 6. 速查
 
 - **误差符号**：左负右正；图像 `x→右`、`y→下`。`line_offset` 正 = 白线在车右侧 = 车偏在线左侧。
 - **转弯半径**由"入弯时机门控（3.3a）"主导：`corner_arrival` 只看近处 `lateral` 来判"弯到没"，`turn_in_lateral_ref` 是它的唯一旋钮。
 - **白线只在最后一步改舵角**，不污染风险/速度。
-- **参数全在 `controller/params.py`**；当前一套 `CONTROL` 通吃所有赛道和提交模式。
+- **多车层（§5）整层由 `enable_opponent` 门控**：对手检测/避让/减速/倒车脱困/force_escape/光流卡死只在 `with_other_cars` 执行；`no_other_cars` 参数禁用 + 代码不走，退化为纯 R049。
+- **参数全在 `controller/params.py`**；按场次分两个 profile：`no_other_cars`（单车计时，R049 驱动底座，多车增量全关）与 `with_other_cars`（多车，叠加对手感知/避让/倒车脱困）。`get_profile(name)` 按名分派，共享核心驾驶参数（见 `CLAUDE.md`「Profile 隔离」）。
 - 模块职责边界、提交文件禁用模块清单见 `CLAUDE.md`；调参过程与证据见 `experiments/`。

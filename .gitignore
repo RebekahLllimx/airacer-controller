@@ -2,6 +2,13 @@
 .DS_Store
 .vscode/
 .idea/
+~$*
+
+# LaTeX build artifacts
+*.aux
+*.out
+*.toc
+*.synctex.gz
 
 # AI agent scratch
 .tmp/

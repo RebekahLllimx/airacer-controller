@@ -104,56 +104,60 @@ def fig2_speed_dist():
 
 # ── Figure 3: Escape Mechanism Timeline ───────────────────────────
 def fig3_escape_mechanism():
-    fig, ax = plt.subplots(1, 1, figsize=(10, 5))
+    # Two stacked panels so the wiggle plot never overlaps the layer boxes.
+    fig, (ax, ax_w) = plt.subplots(
+        2, 1, figsize=(11, 7.2), gridspec_kw={'height_ratios': [3.0, 1.0]})
     ax.set_xlim(0, 10)
-    ax.set_ylim(0, 4.5)
+    ax.set_ylim(0.3, 4.4)
     ax.axis('off')
-    ax.set_title('Multi-Layer Escape System (Self-Rescue Chain)', fontsize=13, fontweight='bold')
+    ax.set_title('Multi-Layer Escape System (Self-Rescue Chain)',
+                 fontsize=13, fontweight='bold')
 
     layers = [
-        ('Level 1: Pinned Escape', 3.6, '#4CAF50',
+        ('Level 1: Pinned Escape', 3.7, '#4CAF50',
          'Trigger: |lateral|>=0.38, |steering|>=0.48, speed<=0.60\n'
-         'Action: Steer 0.92 away from barrier, speed 0.35\n'
-         'Duration: 40 frames (~1.3s). For cars wedged at clear angles.'),
-        ('Level 2: Boundary Obstacle', 2.7, '#8BC34A',
-         'Trigger: near_obstacle + margin<=0.08 + low speed\n'
+         'Action: K-turn 0.92 away from barrier; reverse phase then forward\n'
+         'For cars wedged against a barrier at a clear angle.'),
+        ('Level 2: Boundary Obstacle', 2.8, '#8BC34A',
+         'Trigger: near_obstacle + side margin<=0.08 + low speed\n'
          'Action: Steer 0.92 toward open side, speed 0.45\n'
-         'Duration: 90 frames (~2.9s). For cars pinned by static obstacles.'),
-        ('Level 3: Low-Speed Stall', 1.8, '#FFC107',
+         'For cars pinned by a static obstacle on one side.'),
+        ('Level 3: Low-Speed Stall', 1.9, '#FFC107',
          'Trigger: command speed <= 0.28 for 45 frames\n'
-         'Action: Steer 0.95 + wiggle +/-0.30, speed 0.35\n'
-         'Duration: 90 frames (~2.9s). Swings to break static friction.'),
-        ('Level 4: Force Escape (Safety Net)', 0.9, '#FF5722',
-         'Trigger: lost>=45 frames OR speed<=0.08 for 60 frames\n'
-         'Action: Steer 0.95 toward road direction, speed 0.40\n'
-         'Duration: 120 frames (~3.8s). Last resort, no geometry dependency.'),
+         'Action: Steer 0.95 + wiggle +/-0.30 (see below), speed 0.35\n'
+         'Swings the wheel to break static friction.'),
+        ('Level 4: Force Escape (Safety Net)', 1.0, '#FF5722',
+         'Trigger: lost>=45f  OR  speed<=0.08 for 60f  OR\n'
+         '         frame_motion<0.28 with cmd>=0.40 for 30f (optical stall)\n'
+         'Action: reverse out toward open side, then drive forward. Last resort.'),
     ]
 
     for label, y, color, desc in layers:
-        rect = plt.Rectangle((0.3, y - 0.3), 9.4, 0.7, facecolor=color,
+        rect = plt.Rectangle((0.7, y - 0.42), 9.0, 0.84, facecolor=color,
                               edgecolor='#333', linewidth=1, alpha=0.85)
         ax.add_patch(rect)
-        ax.text(0.6, y + 0.15, label, fontsize=10, fontweight='bold', va='center')
-        ax.text(5.3, y + 0.05, desc, fontsize=7.5, va='center', color='#333')
+        ax.text(0.95, y + 0.22, label, fontsize=10, fontweight='bold', va='center')
+        ax.text(0.95, y - 0.17, desc, fontsize=7.5, va='center', color='#222')
 
-    # Arrow showing priority
-    ax.annotate('', xy=(0.15, 3.9), xytext=(0.15, 1.2),
+    # Arrow showing priority (Level 4 highest priority, evaluated first)
+    ax.annotate('', xy=(0.4, 1.0), xytext=(0.4, 3.7),
                 arrowprops=dict(arrowstyle='->', color='#333', lw=2))
-    ax.text(0.25, 2.5, 'P\nR\nI\nO\nR\nI\nT\nY', fontsize=7, ha='center',
-            fontweight='bold', color='#333')
+    ax.text(0.28, 2.35, 'PRIORITY', fontsize=8, rotation=90, ha='center',
+            va='center', fontweight='bold', color='#333')
 
-    # Wiggle illustration inset
-    inset_ax = fig.add_axes([0.58, 0.12, 0.35, 0.22])
+    # Wiggle pattern as its own panel below
     t_wiggle = np.linspace(0, 90, 90)
-    steer_wiggle = 0.95 + 0.30 * np.array([1 if (i//10)%2==0 else -1 for i in range(90)])
-    inset_ax.plot(t_wiggle, steer_wiggle, 'b-', lw=1.5)
-    inset_ax.fill_between(t_wiggle, steer_wiggle, 0.95, alpha=0.2, color='blue')
-    inset_ax.axhline(0.95, color='gray', ls='--', lw=1, alpha=0.5)
-    inset_ax.set_title('Wiggle Pattern (Escape Steering)', fontsize=8)
-    inset_ax.set_xlabel('Frame', fontsize=7)
-    inset_ax.set_ylabel('Steering', fontsize=7)
-    inset_ax.set_ylim(0, 1.5)
-    inset_ax.tick_params(labelsize=6)
+    steer_wiggle = 0.95 + 0.30 * np.array([1 if (i // 10) % 2 == 0 else -1 for i in range(90)])
+    ax_w.plot(t_wiggle, steer_wiggle, 'b-', lw=1.6)
+    ax_w.fill_between(t_wiggle, steer_wiggle, 0.95, alpha=0.2, color='blue')
+    ax_w.axhline(0.95, color='gray', ls='--', lw=1, alpha=0.6)
+    ax_w.set_title('Level-3 wiggle pattern: steering 0.95 +/- 0.30, flipping every 10 frames',
+                   fontsize=9)
+    ax_w.set_xlabel('Frame', fontsize=8)
+    ax_w.set_ylabel('Steering', fontsize=8)
+    ax_w.set_ylim(0.4, 1.45)
+    ax_w.tick_params(labelsize=7)
+    ax_w.grid(axis='y', alpha=0.3)
 
     fig.tight_layout()
     fig.savefig(os.path.join(OUT_DIR, 'fig3_escape.png'), dpi=150, bbox_inches='tight')
