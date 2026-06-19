@@ -125,11 +125,17 @@ def build_teleport_world(source_world: Path, output_world: Path, car_slot: str, 
 def parse_args() -> argparse.Namespace:
     """解析命令行参数。"""
 
-    parser = argparse.ArgumentParser(description="Create a temporary Webots world with one car teleported.")
-    parser.add_argument("--world", default="complex", help="basic/complex 或 .wbt 路径")
+    parser = argparse.ArgumentParser(
+        description="Create a temporary Webots world with one car moved to a chosen pose. "
+                    "姿态来源二选一：--time 从 telemetry 取历史帧，或 --x/--y/--heading 手动指定。"
+                    "支持链式：--world 可传上一步生成的 .wbt，逐个车位摆位（如造对手斜停场景）。")
+    parser.add_argument("--world", default="complex", help="basic/complex 或 .wbt 路径（可传上一步输出以链式摆多车）")
     parser.add_argument("--telemetry", type=Path, default=DEFAULT_TELEMETRY)
-    parser.add_argument("--time", type=float, required=True, help="目标 telemetry 时间")
+    parser.add_argument("--time", type=float, default=None, help="从 telemetry 取该时刻姿态（与 --x/--y/--heading 二选一）")
     parser.add_argument("--team-id", default=None, help="可选：限定 telemetry 中的 team_id")
+    parser.add_argument("--x", type=float, default=None, help="手动指定世界坐标 x（需同时给 --y/--heading）")
+    parser.add_argument("--y", type=float, default=None, help="手动指定世界坐标 y")
+    parser.add_argument("--heading", type=float, default=None, help="手动指定朝向（弧度，telemetry 口径，左负右正）")
     parser.add_argument("--car-slot", default="car_1")
     parser.add_argument("--z", type=float, default=0.4)
     parser.add_argument("--out", type=Path, required=True)
@@ -143,9 +149,22 @@ def main() -> int:
     args = parse_args()
     source_world = DEFAULT_WORLDS.get(args.world, Path(args.world).expanduser())
     source_world = source_world.resolve()
-    telemetry = args.telemetry.expanduser().resolve()
     output_world = args.out.expanduser().resolve()
-    pose = _load_pose(telemetry, args.time, team_id=args.team_id)
+
+    explicit = args.x is not None or args.y is not None or args.heading is not None
+    if explicit:
+        if None in (args.x, args.y, args.heading):
+            print("[error] 手动姿态需同时给 --x --y --heading")
+            return 2
+        pose = {"t": 0.0, "x": float(args.x), "y": float(args.y),
+                "heading": float(args.heading), "speed": 0.0, "status": "manual"}
+    elif args.time is not None:
+        telemetry = args.telemetry.expanduser().resolve()
+        pose = _load_pose(telemetry, args.time, team_id=args.team_id)
+    else:
+        print("[error] 必须提供 --time（从 telemetry 取）或 --x/--y/--heading（手动指定）")
+        return 2
+
     build_teleport_world(source_world, output_world, args.car_slot, pose, args.z)
     if args.pose_out:
         args.pose_out.parent.mkdir(parents=True, exist_ok=True)

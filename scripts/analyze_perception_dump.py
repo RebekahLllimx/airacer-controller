@@ -21,6 +21,38 @@ sys.path.insert(0, str(ROOT))
 from controller.estimator import ESTIMATOR_PROFILE
 from controller.params import get_profile
 from controller.perception import _build_masks, _scan_image, extract_observation
+from controller.opponent import vehicle_body_mask
+from controller.params import OPPONENT_PROFILE
+
+
+def _opponent_debug(image: np.ndarray) -> dict | None:
+    """重算对手车身检测，返回最大候选块的像素 bbox 与归一化横向位置。
+
+    与 `opponent.detect_near_vehicle_obstacle_state` 的选块逻辑一致（同用 OPPONENT_PROFILE
+    阈值），只是把它选中的连通块 bbox 透出来供 overlay 画框；只用于离线取证，不进提交路径。
+    返回 None 表示该帧没有命中对手块。
+    """
+
+    candidate = vehicle_body_mask(image, OPPONENT_PROFILE)
+    if not np.any(candidate):
+        return None
+    count, _labels, stats, _centroids = cv2.connectedComponentsWithStats(candidate, 8)
+    min_area = float(OPPONENT_PROFILE["near_obstacle_min_area"])
+    min_width = float(OPPONENT_PROFILE["near_obstacle_min_width"])
+    min_height = float(OPPONENT_PROFILE["near_obstacle_min_height"])
+    best = None
+    for index in range(1, count):
+        left, top, comp_w, comp_h, area = stats[index]
+        if area >= min_area and comp_w >= min_width and comp_h >= min_height:
+            if best is None or area > best[-1]:
+                best = (int(left), int(top), int(comp_w), int(comp_h), int(area))
+    if best is None:
+        return None
+    left, top, comp_w, comp_h, _area = best
+    width = candidate.shape[1]
+    center_x = left + comp_w * 0.5
+    x_norm = float(np.clip((center_x / max(width - 1, 1) - 0.5) * 2.0, -1.0, 1.0))
+    return {"bbox": (left, top, comp_w, comp_h), "obstacle_x": x_norm}
 
 
 def _parse_frame_timestamp(left_path: Path) -> float:
@@ -91,6 +123,8 @@ def _scan_debug(image: np.ndarray, timestamp: float, profile: dict) -> dict:
         "road_mask": road_mask,
         "edge_mask": edge_mask,
         "scan": scan,
+        # 多车 profile 下额外透出对手检测框，供 overlay 标注；单车下为 None。
+        "opponent": _opponent_debug(image) if enable_opp else None,
     }
 
 
@@ -105,6 +139,17 @@ def _draw_side_overlay(image: np.ndarray, debug: dict) -> np.ndarray:
         y = int(round(center[1]))
         cv2.line(overlay, (int(round(left[0])), y), (int(round(right[0])), y), (255, 180, 0), 1)
         cv2.circle(overlay, (int(round(center[0])), y), 4, (0, 0, 255), -1)
+    opponent = debug.get("opponent")
+    if opponent is not None:
+        h, w = overlay.shape[:2]
+        bx, by, bw, bh = opponent["bbox"]
+        # 红框=被检测为对手车身的最大连通块。
+        cv2.rectangle(overlay, (bx, by), (bx + bw, by + bh), (0, 0, 255), 2)
+        # 品红竖线=obstacle_x（对手横向位置，左负右正），policy 据此朝反侧让开。
+        obs_px = int(round((opponent["obstacle_x"] * 0.5 + 0.5) * (w - 1)))
+        cv2.line(overlay, (obs_px, 0), (obs_px, h - 1), (255, 0, 255), 1)
+        cv2.putText(overlay, f"opp x={opponent['obstacle_x']:+.2f}", (bx, max(by - 8, 16)),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 1, cv2.LINE_AA)
     return overlay
 
 
