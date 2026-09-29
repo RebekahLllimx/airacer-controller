@@ -19,7 +19,7 @@
 #   .tmp/run.archive/telemetry_<timestamp>.jsonl 旧 SDK telemetry 归档；滚动保留最近 10 个
 set -euo pipefail
 
-SDK=/Users/day/Desktop/Github/pkudsa.airacer/sdk
+SDK="${AIRACER_SDK:?Set AIRACER_SDK to the official SDK directory}"
 ARCHIVE_KEEP=10
 WORLD=${1:?用法: scripts/webots_run.sh <basic|complex> [--frames N] [--frame-window S E] [--no-frames]}
 shift || true

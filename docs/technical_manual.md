@@ -10,7 +10,7 @@
 
 ## 0. 总览：四级流水线
 
-平台每帧调用 `control(left_img, right_img, timestamp)`（双目 BGR 图 + 仿真时间），返回 `(steering, speed)`，`steering∈[-1,1]`、`speed∈[0,1]`。入口 `team_controller_local.py` 只做接线和异常兜底，算法分四级，每一级只读上一级的输出：
+平台每帧调用 `control(left_img, right_img, timestamp)`（双目 BGR 图 + 仿真时间），返回 `(steering, speed)`；`steering∈[-1,1]`，正常前进速度在 `[0,1]`，多车脱困时本地 Webots 可短时使用负速度。入口 `team_controller_local.py` 只做接线和异常兜底，算法分四级，每一级只读上一级的输出：
 
 ```
  left_img, right_img
@@ -158,7 +158,7 @@ final_steering = clamp(steering + line_correction, −1, 1)
 
 ## 4. 输出
 
-`clamp_cmd` 把 `ControlCmd` 限到 `steering∈[−1,1]`、`speed∈[0,1]`。任何一级异常，入口层兜底返回 `(0.0, 0.0)`。
+`clamp_cmd` 把 `ControlCmd` 限到 `steering∈[−1,1]`、`speed∈[−1,1]`。任何一级异常，入口层兜底返回 `(0.0, 0.0)`。负速度仅由多车脱困策略主动输出；线上 sandbox 的处理见 §5。
 
 ---
 

@@ -12,11 +12,12 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import os
 import re
 from pathlib import Path
 
 
-SDK_DIR = Path("/Users/day/Desktop/Github/pkudsa.airacer/sdk")
+SDK_DIR = Path(os.environ.get("AIRACER_SDK", "pkudsa.airacer/sdk"))
 DEFAULT_TELEMETRY = SDK_DIR / ".local" / "recordings" / "telemetry.jsonl"
 DEFAULT_WORLDS = {
     "basic": SDK_DIR / "webots" / "worlds" / "track_basic.wbt",

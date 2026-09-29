@@ -50,7 +50,7 @@ bash scripts/webots_run.sh complex --frame-window 226 230
 bash scripts/webots_run.sh complex --no-frames
 
 bash scripts/webots_jump_run.sh complex 226.5 --duration 6 \
-  --telemetry /Users/day/Desktop/Github/pkudsa.airacer/sdk/.local/recordings/telemetry.jsonl
+  --telemetry $AIRACER_SDK/.local/recordings/telemetry.jsonl
 
 # 多车
 bash scripts/webots_day_multicar.sh complex                 # 6 车真实交通
@@ -78,7 +78,7 @@ python scripts/analyze_telemetry.py --no-archive
 python scripts/analyze_control_log.py .tmp/run/control_complex.jsonl
 
 python scripts/plot_run.py \
-  --telemetry /Users/day/Desktop/Github/pkudsa.airacer/sdk/.local/recordings/telemetry.jsonl \
+  --telemetry $AIRACER_SDK/.local/recordings/telemetry.jsonl \
   --contact-log .tmp/run/contact_complex.jsonl \
   --out .tmp/run/trajectory_speed.png \
   --title "R0xx complex"

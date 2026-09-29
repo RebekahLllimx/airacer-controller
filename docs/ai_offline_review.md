@@ -11,7 +11,7 @@
 | 数据 | 常见路径 | 用途 | 保存策略 |
 |---|---|---|---|
 | 观察反馈 | 用户消息、AI 自跑观察、截图、`experiments/notes.md` | 判断真实现象，确定优先级 | 写进 notes.md 对应 R-id |
-| telemetry | `/Users/day/Desktop/Github/pkudsa.airacer/sdk/.local/recordings/telemetry.jsonl` | 位置、速度、爬行段、事件 | 整场复制件只临时留存；长期写摘要或裁剪窗口 |
+| telemetry | `$AIRACER_SDK/.local/recordings/telemetry.jsonl` | 位置、速度、爬行段、事件 | 整场复制件只临时留存；长期写摘要或裁剪窗口 |
 | 控制日志 | `.tmp/run/control_*.jsonl` | 每帧内部状态、mode、目标控制量、最终输出 | 摘要写 notes；窗口可裁进 case |
 | **撞栏接触日志** | `.tmp/run/contact_*.jsonl` | **AI 可直接读的"撞没撞栏、在哪、多重"**——车身/栏杆接触的时间、世界坐标、点数 | 摘要写 notes；用 `scripts/analyze_contact_log.py` 看 episode |
 | 相机帧 | `.tmp/run/frames_*/*.png` | 逐帧看白线、道路 mask、障碍物、栏杆 | 整场 PNG 不进 git；关键帧渲染成 overlay 后裁进 case |

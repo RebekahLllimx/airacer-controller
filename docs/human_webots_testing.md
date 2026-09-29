@@ -99,7 +99,7 @@ python scripts/build_submission.py --mode with_other_cars \
   --out .tmp/multicar/team_controller_opp.py
 
 # 通用形式：--car 控制器文件:车位:队名（可重复，最多 6 个车位）
-python /Users/day/Desktop/Github/pkudsa.airacer/sdk/run_local.py \
+python $AIRACER_SDK/run_local.py \
   --world complex \
   --car "$PWD/.tmp/multicar/team_controller_car1_debug.py:car_1:ours" \
   --car "$PWD/.tmp/multicar/team_controller_opp.py:car_2:oppA" \
@@ -163,7 +163,7 @@ python /Users/day/Desktop/Github/pkudsa.airacer/sdk/run_local.py \
 - `.tmp/run/webots_console/*.log`（team_controller stdout/stderr，不包含完整 Webots/supervisor 碰撞日志）
 - `.tmp/run/webots_launch.log`（外层 run_local/Webots 启动终端输出；实测不能稳定读到 GUI console 的接触点 warning）
 - `.tmp/run/frames_basic/`
-- SDK telemetry：`/Users/day/Desktop/Github/pkudsa.airacer/sdk/.local/recordings/telemetry.jsonl`
+- SDK telemetry：`$AIRACER_SDK/.local/recordings/telemetry.jsonl`
 - 如果人眼在 Webots GUI console 里看到接触点提示，也要把原文或大意写进反馈。
 
 **不要手动删 `.tmp`**。下一次 `scripts/webots_run.sh` 会把旧产物移到 `.tmp/run.archive/`，并滚动保留最近 10 个归档；全量清理由 AI 在确认结论已写入 `experiments/`、且 notes 的"下一步"不依赖这些产物后执行（见 `docs/ai_offline_review.md` 第 8 节）。
@@ -181,9 +181,9 @@ python scripts/build_submission.py --mode with_other_cars   # 多车 → submiss
 pytest -q
 python scripts/validate_submission.py submissions/no_other_cars/team_controller.py
 python scripts/validate_submission.py submissions/with_other_cars/team_controller.py
-python /Users/day/Desktop/Github/pkudsa.airacer/sdk/validate_controller.py \
+python $AIRACER_SDK/validate_controller.py \
   --code-path submissions/no_other_cars/team_controller.py \
-  --rules /Users/day/Desktop/Github/pkudsa.airacer/sdk/rules.yaml
+  --rules $AIRACER_SDK/rules.yaml
 ```
 
 正式提交文件不能含调试 I/O。

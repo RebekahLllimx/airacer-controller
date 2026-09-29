@@ -1,5 +1,30 @@
 # AI Racer Controller
 
+A vision-based controller for the PKU AI Racer course challenge. Each frame supplies left and right camera images; the controller estimates the road geometry and returns steering and speed. Development is modular, while the competition submission is one self-contained Python file.
+
+![Perception-to-control pipeline](experiments/figures/run3_analysis/fig1_pipeline.png)
+
+**System.** [`controller/`](controller/) separates image perception, track estimation, control policy, opponent detection, and shared data structures. [`scripts/build_submission.py`](scripts/build_submission.py) assembles two profiles: [`no_other_cars`](submissions/no_other_cars/) for time trials and [`with_other_cars`](submissions/with_other_cars/) for traffic. Profile-specific gates keep opponent perception and recovery behavior out of the solo path. The repository contains [tests](tests/), [experiment records](experiments/), [figures](experiments/figures/), and a [technical manual](docs/technical_manual.md).
+
+**My work in the five-person team.** I developed multi-car avoidance and recovery behavior, used prior road-center state to stabilize ambiguous segmentation, addressed a controller–simulator interface mismatch, and built two-car launch and blocked-road test procedures. I also integrated modules through shared contracts and single-file builds. The repository retains team and upstream contributions; its commit history and [experiment notes](experiments/notes.md) show how the system evolved.
+
+**Recorded results.** The [run log](experiments/runs.csv) and [report](experiments/report.md) document solo and multi-car evaluations, including six-car scenarios. These are archived course results; run the checks below to verify the current local build. They do not substitute for a new Webots drive.
+
+```bash
+python -m pip install -r requirements.txt
+python -m pytest -q
+python scripts/build_submission.py --mode no_other_cars
+python scripts/build_submission.py --mode with_other_cars
+python scripts/validate_submission.py submissions/no_other_cars/team_controller.py
+python scripts/validate_submission.py submissions/with_other_cars/team_controller.py
+```
+
+For the official SDK, set `AIRACER_SDK` to its `sdk/` directory; see [setup and validation](docs/official_testing.md). The Chinese engineering handoff continues below.
+
+---
+
+## 中文工程接手指南
+
 本仓库用于开发 AI Racer 控制器。最终交付物是单文件 `team_controller.py`，平台每帧传入左右摄像头图像和时间戳，控制器返回：
 
 ```python
@@ -7,7 +32,7 @@ def control(left_img, right_img, timestamp):
     return steering, speed
 ```
 
-`steering` 范围是 `[-1, 1]`，`speed` 范围是 `[0, 1]`。当前按场次维护两个 profile：`no_other_cars` 生成到 `submissions/no_other_cars/`，`with_other_cars` 生成到 `submissions/with_other_cars/`。
+`steering` 范围是 `[-1, 1]`；正常前进速度在 `[0, 1]`，多车脱困时本地 Webots 可短时使用负速度（详见[技术手册](docs/technical_manual.md)）。当前按场次维护两个 profile：`no_other_cars` 生成到 `submissions/no_other_cars/`，`with_other_cars` 生成到 `submissions/with_other_cars/`。
 
 ## 三分钟接手路线
 
@@ -81,9 +106,9 @@ python scripts/build_submission.py --mode with_other_cars   # 多车 → submiss
 python scripts/validate_submission.py submissions/no_other_cars/team_controller.py
 python scripts/validate_submission.py submissions/with_other_cars/team_controller.py
 
-python /Users/day/Desktop/Github/pkudsa.airacer/sdk/validate_controller.py \
+python $AIRACER_SDK/validate_controller.py \
   --code-path submissions/no_other_cars/team_controller.py \
-  --rules /Users/day/Desktop/Github/pkudsa.airacer/sdk/rules.yaml
+  --rules $AIRACER_SDK/rules.yaml
 ```
 
 Webots 实跑分两层：

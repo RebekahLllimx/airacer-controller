@@ -11,12 +11,13 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import os
 import shutil
 from datetime import datetime
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-SDK_DEFAULT = Path("/Users/day/Desktop/Github/pkudsa.airacer/sdk/.local/recordings")
+SDK_DEFAULT = Path(os.environ.get("AIRACER_SDK", "pkudsa.airacer/sdk")) / ".local" / "recordings"
 DEFAULT_TELEMETRY = SDK_DEFAULT / "telemetry.jsonl"
 ARCHIVE_ROOT = ROOT / ".tmp" / "recordings"
 

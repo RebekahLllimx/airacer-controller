@@ -31,7 +31,7 @@
 # 场景说明见 docs/multicar_extreme_tests.md
 set -euo pipefail
 
-SDK=/Users/day/Desktop/Github/pkudsa.airacer/sdk
+SDK="${AIRACER_SDK:?Set AIRACER_SDK to the official SDK directory}"
 WORLD=${1:?用法: scripts/webots_multicar_run.sh <basic|complex> [--scenario S] [--no-frames] [--slot1 ...] [--slot2 ...]}
 shift || true
 

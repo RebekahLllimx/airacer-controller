@@ -9,7 +9,7 @@
 #   scripts/webots_jump_run.sh complex 144 --duration 8 --frames 1  # 逐帧存图
 set -euo pipefail
 
-SDK=/Users/day/Desktop/Github/pkudsa.airacer/sdk
+SDK="${AIRACER_SDK:?Set AIRACER_SDK to the official SDK directory}"
 ARCHIVE_KEEP=10
 WORLD=${1:?用法: scripts/webots_jump_run.sh <basic|complex> <telemetry_time> [--duration N] [--frames N]}
 TARGET_TIME=${2:?用法: scripts/webots_jump_run.sh <basic|complex> <telemetry_time> [--duration N] [--frames N]}
@@ -153,8 +153,9 @@ for _ in $(seq 1 600); do
   sleep 1
   current_time=$(python - <<'PY'
 import json
+import os
 from pathlib import Path
-path = Path("/Users/day/Desktop/Github/pkudsa.airacer/sdk/.local/recordings/telemetry.jsonl")
+path = Path(os.environ["AIRACER_SDK"]) / ".local/recordings/telemetry.jsonl"
 last = 0.0
 if path.exists():
     for line in path.open():

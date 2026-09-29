@@ -8,7 +8,7 @@
 ## 前提条件
 
 - Webots 已安装并可从命令行启动
-- 官方 SDK 位于 `/Users/day/Desktop/Github/pkudsa.airacer/sdk/`
+- 官方 SDK 位于 `$AIRACER_SDK/`
 - 本仓库已正确构建 `submissions/with_other_cars/team_controller.py`
 
 ## 快速开始：默认双车测试

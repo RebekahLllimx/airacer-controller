@@ -1,6 +1,6 @@
 # 官方测试和赛道清单
 
-本文基于本机官方仓库 `/Users/day/Desktop/Github/pkudsa.airacer`，日期为 2026-06-10。这里的官方，指该仓库当前提供的 SDK、Webots 资产、后端接口文档和赛事规则。
+本文基于 2026-06-10 的官方 SDK 快照。命令使用 `AIRACER_SDK` 指向本机官方仓库的 `sdk/`；这里的官方，指该仓库当前提供的 SDK、Webots 资产、后端接口文档和赛事规则。
 
 结论先写清楚：官方 SDK 登记了 3 个 Webots world，其中 `basic` 和 `complex` 是当前应重点测试的赛道；`airacer` 是旧版演示赛道。各赛道的实跑进度（跑通/超时/未跑）以 `experiments/STATUS.md` 为准，本文不重复维护。
 
@@ -9,7 +9,7 @@
 数据源是官方 `sdk/worlds.py`，也可以用下面命令查看：
 
 ```bash
-python /Users/day/Desktop/Github/pkudsa.airacer/sdk/run_local.py --list-worlds
+python $AIRACER_SDK/run_local.py --list-worlds
 ```
 
 | 短名 | 文件 | 定位 | 车位 |
@@ -37,12 +37,12 @@ python /Users/day/Desktop/Github/pkudsa.airacer/sdk/run_local.py --list-worlds
 
 | 测试 | 命令 | 是否跑 Webots | 作用 |
 |---|---|---:|---|
-| 官方 validator | `python /Users/day/Desktop/Github/pkudsa.airacer/sdk/validate_controller.py --code-path submissions/no_other_cars/team_controller.py --rules /Users/day/Desktop/Github/pkudsa.airacer/sdk/rules.yaml` | 否 | 检查语法、文件大小、禁用 import、禁用内置、`control()` 接口、mock 调用耗时和返回值。 |
-| `run_local --validate-only` | `python /Users/day/Desktop/Github/pkudsa.airacer/sdk/run_local.py --code-path submissions/no_other_cars/team_controller.py --validate-only` | 否 | 走 `run_local.py` 的本地入口，只做校验，不启动仿真。适合提交前快速确认。 |
-| 单车 `basic` | `python /Users/day/Desktop/Github/pkudsa.airacer/sdk/run_local.py --code-path submissions/no_other_cars/team_controller.py --world basic --car-slot car_1 --fast --minimize` | 是 | 默认赛道实跑。用于确认能否基础完赛。 |
-| 单车 `complex` | `python /Users/day/Desktop/Github/pkudsa.airacer/sdk/run_local.py --code-path submissions/no_other_cars/team_controller.py --world complex --car-slot car_1 --fast --minimize` | 是 | 复杂赛道实跑。用于验证策略是否只过拟合 `basic`。 |
-| 单车 `airacer` | `python /Users/day/Desktop/Github/pkudsa.airacer/sdk/run_local.py --code-path submissions/no_other_cars/team_controller.py --world airacer --car-slot car_1 --fast --minimize` | 是 | 旧 demo world。可作为兼容性观察，不建议作为主指标。 |
-| 多车本地测试 | `python /Users/day/Desktop/Github/pkudsa.airacer/sdk/run_local.py --world basic --car "$PWD/submissions/with_other_cars/team_controller.py:car_1:ours" --car "$PWD/submissions/with_other_cars/team_controller.py:car_2:opp"` | 是 | 本地观察多车启动、配置和基本交互。不能完全代表线上碰撞惩罚和赛制。 |
+| 官方 validator | `python $AIRACER_SDK/validate_controller.py --code-path submissions/no_other_cars/team_controller.py --rules $AIRACER_SDK/rules.yaml` | 否 | 检查语法、文件大小、禁用 import、禁用内置、`control()` 接口、mock 调用耗时和返回值。 |
+| `run_local --validate-only` | `python $AIRACER_SDK/run_local.py --code-path submissions/no_other_cars/team_controller.py --validate-only` | 否 | 走 `run_local.py` 的本地入口，只做校验，不启动仿真。适合提交前快速确认。 |
+| 单车 `basic` | `python $AIRACER_SDK/run_local.py --code-path submissions/no_other_cars/team_controller.py --world basic --car-slot car_1 --fast --minimize` | 是 | 默认赛道实跑。用于确认能否基础完赛。 |
+| 单车 `complex` | `python $AIRACER_SDK/run_local.py --code-path submissions/no_other_cars/team_controller.py --world complex --car-slot car_1 --fast --minimize` | 是 | 复杂赛道实跑。用于验证策略是否只过拟合 `basic`。 |
+| 单车 `airacer` | `python $AIRACER_SDK/run_local.py --code-path submissions/no_other_cars/team_controller.py --world airacer --car-slot car_1 --fast --minimize` | 是 | 旧 demo world。可作为兼容性观察，不建议作为主指标。 |
+| 多车本地测试 | `python $AIRACER_SDK/run_local.py --world basic --car "$PWD/submissions/with_other_cars/team_controller.py:car_1:ours" --car "$PWD/submissions/with_other_cars/team_controller.py:car_2:opp"` | 是 | 本地观察多车启动、配置和基本交互。不能完全代表线上碰撞惩罚和赛制。 |
 
 `run_local.py` 还支持：
 
@@ -68,13 +68,13 @@ python /Users/day/Desktop/Github/pkudsa.airacer/sdk/run_local.py --list-worlds
 查看测试清单：
 
 ```bash
-pytest --collect-only -q /Users/day/Desktop/Github/pkudsa.airacer/sdk/tests
+pytest --collect-only -q $AIRACER_SDK/tests
 ```
 
 运行官方 SDK 自测：
 
 ```bash
-pytest /Users/day/Desktop/Github/pkudsa.airacer/sdk/tests
+pytest $AIRACER_SDK/tests
 ```
 
 ## 4. 线上平台可见的测试入口
@@ -130,10 +130,10 @@ pytest /Users/day/Desktop/Github/pkudsa.airacer/sdk/tests
 
 ## 7. 信息来源
 
-- `/Users/day/Desktop/Github/pkudsa.airacer/sdk/worlds.py`
-- `/Users/day/Desktop/Github/pkudsa.airacer/sdk/run_local.py`
-- `/Users/day/Desktop/Github/pkudsa.airacer/sdk/tests/`
-- `/Users/day/Desktop/Github/pkudsa.airacer/sdk/docs/local_test_guide.md`
-- `/Users/day/Desktop/Github/pkudsa.airacer/READMEs/README_blueprints.md`
-- `/Users/day/Desktop/Github/pkudsa.airacer/READMEs/README_demo_testing.md`
-- `/Users/day/Desktop/Github/pkudsa.airacer/READMEs/README_race_rules.md`
+- `$AIRACER_SDK/worlds.py`
+- `$AIRACER_SDK/run_local.py`
+- `$AIRACER_SDK/tests/`
+- `$AIRACER_SDK/docs/local_test_guide.md`
+- `$AIRACER_SDK/../READMEs/README_blueprints.md`
+- `$AIRACER_SDK/../READMEs/README_demo_testing.md`
+- `$AIRACER_SDK/../READMEs/README_race_rules.md`

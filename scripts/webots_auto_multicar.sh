@@ -11,7 +11,7 @@
 # 产物同 webots_day_multicar.sh：.tmp/multicar/{control,contact}_<world>_car1.jsonl 等
 set -uo pipefail
 
-SDK=/Users/day/Desktop/Github/pkudsa.airacer/sdk
+SDK="${AIRACER_SDK:?Set AIRACER_SDK to the official SDK directory}"
 WORLD=${1:-complex}
 MAX=${2:-300}
 IDLE=${3:-25}

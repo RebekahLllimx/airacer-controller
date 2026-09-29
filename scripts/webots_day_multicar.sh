@@ -21,7 +21,7 @@
 #   python scripts/analyze_contact_log.py .tmp/multicar/contact_complex_car1.jsonl
 set -euo pipefail
 
-SDK=/Users/day/Desktop/Github/pkudsa.airacer/sdk
+SDK="${AIRACER_SDK:?Set AIRACER_SDK to the official SDK directory}"
 WORLD=${1:-complex}
 shift || true
 

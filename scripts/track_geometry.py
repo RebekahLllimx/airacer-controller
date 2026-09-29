@@ -12,12 +12,13 @@
 from __future__ import annotations
 
 import math
+import os
 import re
 from pathlib import Path
 
 DEFAULT_WORLDS = {
-    "basic": "/Users/day/Desktop/Github/pkudsa.airacer/sdk/webots/worlds/track_basic.wbt",
-    "complex": "/Users/day/Desktop/Github/pkudsa.airacer/sdk/webots/worlds/track_complex.wbt",
+    "basic": str(Path(os.environ.get("AIRACER_SDK", "pkudsa.airacer/sdk")) / "webots/worlds/track_basic.wbt"),
+    "complex": str(Path(os.environ.get("AIRACER_SDK", "pkudsa.airacer/sdk")) / "webots/worlds/track_complex.wbt"),
 }
 
 _NODE_RE = re.compile(r"^(Road|CurvedRoadSegment|Solid)\s*\{", re.MULTILINE)

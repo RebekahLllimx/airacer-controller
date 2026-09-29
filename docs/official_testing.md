@@ -1,10 +1,6 @@
 # 官方 SDK 与 Webots 本地测试接入
 
-本仓库不复制官方平台源码。官方仓库放在相邻目录：
-
-```text
-/Users/day/Desktop/Github/pkudsa.airacer
-```
+本仓库不复制官方平台源码。以下命令把官方仓库克隆到相邻目录，并通过 `AIRACER_SDK` 指向其 `sdk/`。若已有 SDK，直接设置该变量即可。
 
 我们的控制器先由本仓库生成单文件 `team_controller.py`，再交给官方 SDK 校验或启动 Webots。
 
@@ -13,14 +9,14 @@
 如果本地还没有官方仓库：
 
 ```bash
-cd /Users/day/Desktop/Github
-git clone https://github.com/pkulab409/pkudsa.airacer.git
+git clone https://github.com/pkulab409/pkudsa.airacer.git ../pkudsa.airacer
+export AIRACER_SDK="$(cd ../pkudsa.airacer/sdk && pwd)"
 ```
 
 如果已经存在，更新到最新版本：
 
 ```bash
-git -C /Users/day/Desktop/Github/pkudsa.airacer pull --ff-only
+git -C "${AIRACER_SDK%/sdk}" pull --ff-only
 ```
 
 官方本地测试主要用这些文件：
@@ -69,26 +65,26 @@ pytest
 官方 validator 的实际参数是 `--rules`，不是 `--rules-path`。
 
 ```bash
-python /Users/day/Desktop/Github/pkudsa.airacer/sdk/validate_controller.py \
+python $AIRACER_SDK/validate_controller.py \
   --code-path submissions/no_other_cars/team_controller.py \
-  --rules /Users/day/Desktop/Github/pkudsa.airacer/sdk/rules.yaml
+  --rules $AIRACER_SDK/rules.yaml
 ```
 
 需要机器可读结果时：
 
 ```bash
-python /Users/day/Desktop/Github/pkudsa.airacer/sdk/validate_controller.py \
+python $AIRACER_SDK/validate_controller.py \
   --code-path submissions/no_other_cars/team_controller.py \
-  --rules /Users/day/Desktop/Github/pkudsa.airacer/sdk/rules.yaml \
+  --rules $AIRACER_SDK/rules.yaml \
   --json
 ```
 
 更严格的提交前检查：
 
 ```bash
-python /Users/day/Desktop/Github/pkudsa.airacer/sdk/validate_controller.py \
+python $AIRACER_SDK/validate_controller.py \
   --code-path submissions/no_other_cars/team_controller.py \
-  --rules /Users/day/Desktop/Github/pkudsa.airacer/sdk/rules.yaml \
+  --rules $AIRACER_SDK/rules.yaml \
   --strict
 ```
 
@@ -99,7 +95,7 @@ python /Users/day/Desktop/Github/pkudsa.airacer/sdk/validate_controller.py \
 只跑 `validate_controller.py` 或 `run_local.py --validate-only` 不需要 Webots。要用官方赛道做真实可视化仿真，macOS 上必须先手动安装 Webots 桌面 app。安装后，SDK 会启动 Webots 图形界面并打开官方 `.wbt` 赛道。
 
 ```bash
-python /Users/day/Desktop/Github/pkudsa.airacer/sdk/check_env.py
+python $AIRACER_SDK/check_env.py
 ```
 
 如果 `which webots` 找不到，且 `/Applications/Webots.app` 不存在，就说明还没安装或 SDK 找不到 Webots。
@@ -129,7 +125,7 @@ export WEBOTS_HOME=/Applications/Webots.app
 这一步调用官方 `run_local.py`，但不启动 Webots：
 
 ```bash
-python /Users/day/Desktop/Github/pkudsa.airacer/sdk/run_local.py \
+python $AIRACER_SDK/run_local.py \
   --code-path "$PWD/submissions/no_other_cars/team_controller.py" \
   --validate-only
 ```
@@ -141,13 +137,13 @@ python /Users/day/Desktop/Github/pkudsa.airacer/sdk/run_local.py \
 先查看官方 SDK 当前支持的赛道和车位：
 
 ```bash
-python /Users/day/Desktop/Github/pkudsa.airacer/sdk/run_local.py --list-worlds
+python $AIRACER_SDK/run_local.py --list-worlds
 ```
 
 默认基础赛道：
 
 ```bash
-python /Users/day/Desktop/Github/pkudsa.airacer/sdk/run_local.py \
+python $AIRACER_SDK/run_local.py \
   --code-path "$PWD/submissions/no_other_cars/team_controller.py" \
   --world basic \
   --car-slot car_1
@@ -156,7 +152,7 @@ python /Users/day/Desktop/Github/pkudsa.airacer/sdk/run_local.py \
 复杂赛道：
 
 ```bash
-python /Users/day/Desktop/Github/pkudsa.airacer/sdk/run_local.py \
+python $AIRACER_SDK/run_local.py \
   --code-path "$PWD/submissions/no_other_cars/team_controller.py" \
   --world complex \
   --car-slot car_1
@@ -165,7 +161,7 @@ python /Users/day/Desktop/Github/pkudsa.airacer/sdk/run_local.py \
 无弹窗批量模式：
 
 ```bash
-python /Users/day/Desktop/Github/pkudsa.airacer/sdk/run_local.py \
+python $AIRACER_SDK/run_local.py \
   --code-path "$PWD/submissions/no_other_cars/team_controller.py" \
   --world basic \
   --car-slot car_1 \
@@ -185,7 +181,7 @@ controller_path:slot:team
 示例：
 
 ```bash
-python /Users/day/Desktop/Github/pkudsa.airacer/sdk/run_local.py \
+python $AIRACER_SDK/run_local.py \
   --world basic \
   --car "$PWD/submissions/with_other_cars/team_controller.py:car_1:ours" \
   --car "$PWD/submissions/with_other_cars/team_controller.py:car_2:opp"
@@ -206,10 +202,10 @@ python /Users/day/Desktop/Github/pkudsa.airacer/sdk/run_local.py \
 python scripts/build_submission.py --mode no_other_cars --out submissions/no_other_cars/team_controller.py
 python scripts/validate_submission.py submissions/no_other_cars/team_controller.py
 pytest
-python /Users/day/Desktop/Github/pkudsa.airacer/sdk/validate_controller.py \
+python $AIRACER_SDK/validate_controller.py \
   --code-path submissions/no_other_cars/team_controller.py \
-  --rules /Users/day/Desktop/Github/pkudsa.airacer/sdk/rules.yaml
-python /Users/day/Desktop/Github/pkudsa.airacer/sdk/run_local.py \
+  --rules $AIRACER_SDK/rules.yaml
+python $AIRACER_SDK/run_local.py \
   --code-path "$PWD/submissions/no_other_cars/team_controller.py" \
   --validate-only
 ```

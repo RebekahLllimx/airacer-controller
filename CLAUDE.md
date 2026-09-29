@@ -8,7 +8,7 @@ This file provides guidance to Claude Code (claude.ai/code) and other coding age
 
 ```python
 def control(left_img, right_img, timestamp):
-    return steering, speed  # steering ∈ [-1,1], speed ∈ [0,1]
+    return steering, speed  # steering ∈ [-1,1]; local multi-car escape can return negative speed
 ```
 
 `controller/` 是模块化开发区，`submissions/` 是脚本生成的提交文件区，正常情况下不手工修改 `submissions/`。
@@ -32,17 +32,17 @@ pytest tests/test_contracts.py
 pytest tests/test_estimator.py::test_centerline_straight_track_is_near_zero
 
 # 官方 validator（不需要 Webots）
-python /Users/day/Desktop/Github/pkudsa.airacer/sdk/validate_controller.py \
+python $AIRACER_SDK/validate_controller.py \
   --code-path submissions/no_other_cars/team_controller.py \
-  --rules /Users/day/Desktop/Github/pkudsa.airacer/sdk/rules.yaml
+  --rules $AIRACER_SDK/rules.yaml
 
 # 官方 run_local 校验层（不启动 Webots）
-python /Users/day/Desktop/Github/pkudsa.airacer/sdk/run_local.py \
+python $AIRACER_SDK/run_local.py \
   --code-path "$PWD/submissions/no_other_cars/team_controller.py" \
   --validate-only
 
 # Webots 单车实跑（需要已安装 Webots.app）
-python /Users/day/Desktop/Github/pkudsa.airacer/sdk/run_local.py \
+python $AIRACER_SDK/run_local.py \
   --code-path "$PWD/submissions/no_other_cars/team_controller.py" \
   --world basic --car-slot car_1
 ```
