@@ -1,6 +1,6 @@
 # AI Racer Controller
 
-A vision-based controller for the PKU AI Racer course challenge. Each frame supplies left and right camera images; the controller estimates the road geometry and returns steering and speed. Development is modular, while the competition submission is one self-contained Python file.
+A vision-based controller for the PKU DSA course challenge. Each frame supplies left and right camera images; the controller estimates the road geometry and returns steering and speed. Development is modular, while the competition submission is one self-contained Python file.
 
 ![Perception-to-control pipeline](experiments/figures/run3_analysis/fig1_pipeline.png)
 
