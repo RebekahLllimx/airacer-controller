@@ -1,156 +1,59 @@
 # AI Racer Controller
 
-A vision-based controller for the PKU DSA course challenge. Each frame supplies left and right camera images; the controller estimates the road geometry and returns steering and speed. Development is modular, while the competition submission is one self-contained Python file.
+A camera-based controller for the PKU DSA AI Racer course challenge. It reads left and right camera frames, estimates the road, and returns steering and speed for each frame. Development happens in modular Python code; the competition artifact is a generated, self-contained `team_controller.py` file.
 
 ![Perception-to-control pipeline](experiments/figures/run3_analysis/fig1_pipeline.png)
 
-**System.** [`controller/`](controller/) separates image perception, track estimation, control policy, opponent detection, and shared data structures. [`scripts/build_submission.py`](scripts/build_submission.py) assembles two profiles: [`no_other_cars`](submissions/no_other_cars/) for time trials and [`with_other_cars`](submissions/with_other_cars/) for traffic. Profile-specific gates keep opponent perception and recovery behavior out of the solo path. The repository contains [tests](tests/), [experiment records](experiments/), [figures](experiments/figures/), and a [technical manual](docs/technical_manual.md).
+## How it works
 
-**My work in the five-person team.** I developed multi-car avoidance and recovery behavior within the shared [perception](controller/perception.py) and [policy](controller/policy.py) pipeline, used prior road-center state to stabilize ambiguous segmentation, addressed a controller–simulator interface mismatch, and built [multi-car launch](scripts/webots_multicar_run.sh) and blocked-road test procedures. I also integrated modules through shared contracts and single-file builds. The repository retains team and upstream contributions; its commit history and [experiment notes](experiments/notes.md) show how the system evolved.
-
-**Recorded results.** The [run log](experiments/runs.csv) and [report](experiments/report.md) document solo and multi-car evaluations, including six-car scenarios. These are archived course results; run the checks below to verify the current local build. They do not substitute for a new Webots drive.
-
-```bash
-python -m pip install -r requirements.txt
-python -m pytest -q
-python scripts/build_submission.py --mode no_other_cars
-python scripts/build_submission.py --mode with_other_cars
-python scripts/validate_submission.py submissions/no_other_cars/team_controller.py
-python scripts/validate_submission.py submissions/with_other_cars/team_controller.py
+```text
+camera frames -> perception -> track estimate -> driving policy -> steering and speed
 ```
 
-For the official SDK, set `AIRACER_SDK` to its `sdk/` directory; see [setup and validation](docs/official_testing.md). The Chinese engineering handoff continues below.
-
----
-
-## 中文工程接手指南
-
-本仓库用于开发 AI Racer 控制器。最终交付物是单文件 `team_controller.py`，平台每帧传入左右摄像头图像和时间戳，控制器返回：
+The public controller interface is:
 
 ```python
 def control(left_img, right_img, timestamp):
     return steering, speed
 ```
 
-`steering` 范围是 `[-1, 1]`；正常前进速度在 `[0, 1]`，多车脱困时本地 Webots 可短时使用负速度（详见[技术手册](docs/technical_manual.md)）。当前按场次维护两个 profile：`no_other_cars` 生成到 `submissions/no_other_cars/`，`with_other_cars` 生成到 `submissions/with_other_cars/`。
+Steering is bounded to `[-1, 1]`. Normal forward speed is in `[0, 1]`; the local multi-car recovery policy can briefly request negative speed to reverse out of a blockage.
 
-## 三分钟接手路线
+| Profile | Purpose | Generated artifact |
+| --- | --- | --- |
+| `no_other_cars` | Solo time trials; opponent detection and multi-car recovery are disabled. | [Solo submission](submissions/no_other_cars/team_controller.py) |
+| `with_other_cars` | Traffic scenarios; adds opponent avoidance and recovery behavior. | [Multi-car submission](submissions/with_other_cars/team_controller.py) |
 
-1. 先读 `experiments/STATUS.md`：当前做到哪、现在最好版本是什么、下一步做什么。
-2. 再读本文件：仓库里有什么、东西放在哪、常用命令是什么。
-3. 要改代码读 `CLAUDE.md`；要跑 Webots 读 `docs/human_webots_testing.md`；要诊断一轮 run 读 `docs/ai_offline_review.md` 和 `scripts/README.md`。
-4. 要找历史证据读 `experiments/README.md`，再进入 `cases/`、`figures/`、`notes.md`。
+[`controller/`](controller/) contains perception, track estimation, opponent detection, policy, parameters, and the shared interface. [`scripts/build_submission.py`](scripts/build_submission.py) assembles a single-file submission for either profile. The profiles share driving code, with explicit gates that keep traffic-specific processing out of the solo path. See the [technical manual](docs/technical_manual.md) for the design.
 
-## 文档地图（先读什么）
+## Run the offline checks
 
-每份文档只负责一件事，按需读，不要互相抄：
-
-| 文档 | 负责 | 什么时候读 |
-|---|---|---|
-| **`experiments/STATUS.md`** | 唯一活动交接文档：当前状态、铁律、未解问题、下一步 | **新接手第一份，永远先读** |
-| `CLAUDE.md` | 给 coding agent 的项目约定：模块边界、参数源、提交限制、构建机制 | 改任何代码前 |
-| `AGENTS.md` | 本地 agent 额外约定，指向 `CLAUDE.md` | agent 接手时自动参考；人工通常不用单独读 |
-| `README.md`（本文件） | 仓库导航：目录约定、文档地图、常用命令 | 想知道东西放在哪、有哪些命令 |
-| `TASK.md` | 上游任务/平台规格（接口、规则、限制），静态参考 | 需要确认平台行为或赛制细节 |
-| `docs/README.md` | `docs/` 内文档索引 | 不确定该读哪份流程文档 |
-| `scripts/README.md` | 构建、实跑、分析、回放、跳点等脚本索引 | 想诊断一轮 run 或找工具入口 |
-| `experiments/README.md` | `experiments/` 留档规则总览 | 想知道 STATUS、runs、notes、cases、figures 怎么分工 |
-| `baselines/README.md` | baseline 快照规则和当前快照索引 | 想找可回退版本或当前 best 快照 |
-| `docs/official_testing.md` | 官方 SDK 与 Webots 安装、官方 validator | 首次配环境、提交前跑官方校验 |
-| `docs/human_webots_testing.md` | AI 或人类跑 Webots，并留下可复盘产物的流程 | 准备上车跑一轮 |
-| `docs/ai_offline_review.md` | AI 用日志/telemetry/帧/overlay 复盘一轮 run 的流程 | 跑完后需要诊断机制 |
-| `docs/official_test_matrix.md` | 官方赛道、测试入口、赛制清单 | 需要赛道/测试入口的完整清单 |
-| `experiments/notes.md` | 按 R-id 倒序的实验叙事 | 想查某次 run 的细节，不必通读 |
-| `experiments/runs.csv` | 真实 run 的结构化台账 | 想横向比较历次结果 |
-| `experiments/figures/README.md` | 报告可视化归档规则（留什么图、怎么选、放哪） | 想沉淀整场轨迹图/感知标注帧等报告素材 |
-| `experiments/cases/README.md` | 失败窗口归档规则（回归用，与 figures 区分） | 想保留可复现的失败窗口 |
-
-要改控制行为：读 `controller/`，尤其是 `common.py`、`params.py`、`perception.py`、`estimator.py`、`policy.py`。
-
-## 目录约定
-
-| 路径 | 作用 |
-|---|---|
-| `controller/` | 手写控制器源码。只在这里改算法；模块边界见 `controller/README.md`。 |
-| `submissions/` | 由脚本生成的单文件提交版。不要手工改；规则见 `submissions/README.md`。 |
-| `scripts/` | 构建、校验、日志分析、离线回放、可视化工具；索引见 `scripts/README.md`。 |
-| `tests/` | 单元测试、脚本测试、提交文件静态检查；分组见 `tests/README.md`。 |
-| `docs/` | 测试、调试和官方 SDK 接入说明；索引见 `docs/README.md`。 |
-| `experiments/` | 真实 run 记录、机制分析、交接文档、失败窗口 case、报告可视化归档；规则见 `experiments/README.md`。 |
-| `baselines/` | 已确认值得保留的稳定策略快照；索引见 `baselines/README.md`。 |
-| `.tmp/` | 临时工作区。可随时删除，不进 git。 |
-
-核心流水线固定为：
-
-```text
-left_img/right_img
-→ perception.extract_observation()
-→ estimator.estimate_track()
-→ policy.decide_control()
-→ clamp_cmd()
-→ steering/speed
-```
-
-模块间数据结构在 `controller/common.py`。改字段时必须同步调用方、构建脚本和测试。
-
-## 常用命令
+From the repository root, with Python and the packages in `requirements.txt`:
 
 ```bash
-pip install -r requirements.txt
+python -m pip install -r requirements.txt
+python -m pytest -q
 
-pytest -q
-
-python scripts/build_submission.py --mode no_other_cars     # 单车：R049驾驶底座；R068为当前官方成绩
-python scripts/build_submission.py --mode with_other_cars   # 多车 → submissions/with_other_cars/
+python scripts/build_submission.py --mode no_other_cars
+python scripts/build_submission.py --mode with_other_cars
 
 python scripts/validate_submission.py submissions/no_other_cars/team_controller.py
 python scripts/validate_submission.py submissions/with_other_cars/team_controller.py
-
-python $AIRACER_SDK/validate_controller.py \
-  --code-path submissions/no_other_cars/team_controller.py \
-  --rules $AIRACER_SDK/rules.yaml
 ```
 
-Webots 实跑分两层：
+The build commands regenerate the tracked submission files. The checks cover contracts and local submission rules; they do not measure driving performance. For the separate official SDK validator and a Webots run, follow [SDK setup and testing](docs/official_testing.md). That workflow uses `AIRACER_SDK` to point to an external SDK checkout.
 
-- AI 日常迭代可以自己跑 Webots、看日志和截图：`docs/human_webots_testing.md` + `docs/ai_offline_review.md`
-- 关键验收节点再让人类肉眼确认，例如准备标完成、合 main、提交 final，或 AI 判断已经接近解决时
+## Evidence and project history
 
-完整工具索引见 `scripts/README.md`。
+[`experiments/runs.csv`](experiments/runs.csv), the [experiment notes](experiments/notes.md), and the [report](experiments/report.md) record course runs, including multi-car scenarios. These are historical results. A new build should be driven and logged again before making a current performance claim. The [experiment archive guide](experiments/README.md) explains how runs, failure cases, and figures are organized.
 
-## 诊断一轮 run 的工具速查
+This was a **five-person team project**. My work focused on multi-car avoidance and recovery in the shared [perception](controller/perception.py) and [policy](controller/policy.py) pipeline, using prior road-center state to stabilize ambiguous segmentation, resolving a controller-simulator interface mismatch, and building [multi-car launch](scripts/webots_multicar_run.sh) and blocked-road test procedures. I also integrated modules through shared contracts and single-file builds. The commit history and experiment records retain the team's contributions.
 
-| 目标 | 工具 | 典型命令或产物 |
-|---|---|---|
-| 从头跑 Webots 并保存日志/帧 | `scripts/webots_run.sh` | `bash scripts/webots_run.sh complex`；默认每 10 帧存一对 PNG 到 `.tmp/run/frames_complex/` |
-| 精确窗口逐帧取证 | `scripts/webots_run.sh --frames 1` 或 `--frame-window S E` | `bash scripts/webots_run.sh complex --frame-window 226 230` |
-| 看轨迹、速度、事件和近停 | `scripts/analyze_telemetry.py` | `python scripts/analyze_telemetry.py --no-archive` |
-| 看内部状态、白线、mode、舵角 | `scripts/analyze_control_log.py` | `python scripts/analyze_control_log.py .tmp/run/control_complex.jsonl` |
-| 生成整场轨迹+速度+撞栏图 | `scripts/plot_run.py` | 输出 `trajectory_speed.png`，可叠加 `contact_*.jsonl`；报告图按 `experiments/figures/README.md` 归档 |
-| 生成关键帧感知 overlay | `scripts/analyze_perception_dump.py` | 带 `--mode no_other_cars/with_other_cars` 和 `--at 226.56,228.48`；用于看 mask、白线点、扫描线、边界 |
-| 固定画面开环回放 | `scripts/replay_offline.py` | 带 `--mode` 用已有帧重跑当前代码，比较 `line_conf/steering/mode` 等字段 |
-| 从历史姿态近似启动 | `scripts/webots_jump_run.sh` | 只恢复 `x/y/heading`，用于看当前代码从某姿态起步的趋势，不是严格续跑 |
-| 裁剪失败窗口 | 手工裁 control/telemetry + overlay | 放 `experiments/cases/<R-id>_<slug>/` |
+## Where to go next
 
-## 调试产物规则
-
-整场录像和逐帧回看很重要，但它们是临时诊断材料，不是长期仓库资产。这里的“整场回看”是 AI 先看全局摘要，再从整场记录里挑关键窗口逐帧取证；不是要求人类或 AI 把完整录像逐帧看完。
-
-- `.tmp/` 用来放 debug 构建、控制日志、整场相机帧 PNG、overlay、Webots 录像和临时 SDK 克隆。`scripts/webots_run.sh` 默认每轮保存相机帧（无损 PNG，整场约几百 MB），所以跑完后看任意时刻都不必重跑。
-- AI 可以负责日常实跑、日志分析、截图/overlay 取证和机制解释；人类负责关键验收时的肉眼确认。
-- AI 分析时必须用关键窗口的逐帧画面或 overlay 支撑判断；不要只凭数字或猜测下结论。
-- **最近一次 run 的 `.tmp/run` 产物保留到被下一次 run 覆盖**（`scripts/webots_run.sh` 自动轮换到 `.tmp/run.prev`）；清理前先确认 notes 里的"下一步"不依赖它。不要提交整场帧、整场录像、批量截图或临时 telemetry 复制件。
-- 如果某个失败窗口以后还会反复用来回归，裁剪成 `experiments/cases/<R-id>_<slug>/`，只保留很小的窗口和少量关键 overlay。
-- 如果某张图会写进报告或长期回查，按 `experiments/figures/README.md` 归档，并写 `CAPTION.md`。
-- 如果某版控制器值得回退，按 `baselines/README.md` 保存单文件和说明。
-
-## 实验记录
-
-- `experiments/STATUS.md`：唯一活动交接文档，就地更新，不再新建 handoff 文件。
-- `experiments/runs.csv`：真实 Webots/platform run 的结构化台账。`notes` 列只写一两句并以 `R0xx |` 开头，细节进 notes.md。
-- `experiments/notes.md`：实跑现象、数据摘要、结论、下一步，最新记录在最上面。
-- `experiments/analysis_*.md`：有机制解释价值的长分析。
-- `experiments/cases/`：少量关键失败窗口，不保存整场原始数据。
-- `experiments/figures/`：报告图和长期回查图，不保存批量截图。
-
-离线回放和脚本分析不单独建 R-id；只有真实 Webots/platform run 才写入 `runs.csv`。
+- [Engineering handoff](experiments/STATUS.md): the team's last recorded status, open questions, and next steps (last updated June 2026).
+- [Controller module guide](controller/README.md): source boundaries and data flow.
+- [Testing documentation](docs/README.md): official SDK, Webots, and review procedures.
+- [Script index](scripts/README.md): build, validation, replay, and analysis commands.
+- [Submission guide](submissions/README.md): generated artifacts and submission rules.
+- [Experiment archive](experiments/README.md): recorded runs, cases, and figures.
