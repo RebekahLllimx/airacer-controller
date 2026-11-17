@@ -172,6 +172,14 @@ class _CameraScan:
     obstacle_size: float = 0.0
     red_environment: bool = False
 
+@dataclass
+class _RoadSamples:
+    centers: list[tuple[float, float]]
+    left_edges: list[tuple[float, float]]
+    right_edges: list[tuple[float, float]]
+    widths: list[float]
+    fallback_count: int = 0
+
 def _empty_points():
     return np.empty((0, 2), dtype=np.float32)
 
@@ -220,6 +228,34 @@ def _sampled_color_mask(hsv, lab, color_name):
     lab_match = (np.abs(lab[:, :, 0] - lab_center[0]) <= lab_tol[0]) & (np.abs(lab[:, :, 1] - lab_center[1]) <= lab_tol[1]) & (np.abs(lab[:, :, 2] - lab_center[2]) <= lab_tol[2])
     return hsv_match & lab_match
 
+def _road_surface_mask(image_roi, hsv_roi, lab_roi):
+    gray_roi = cv2.cvtColor(image_roi, cv2.COLOR_BGR2GRAY)
+    bgr_roi = image_roi.astype(np.float32)
+    road_color = COLOR_PROFILE['road_asphalt_dark_gray']
+    b_minus_g = bgr_roi[:, :, 0] - bgr_roi[:, :, 1]
+    g_minus_r = bgr_roi[:, :, 1] - bgr_roi[:, :, 2]
+    road_core = _sampled_color_mask(hsv_roi, lab_roi, 'road_asphalt_dark_gray') & (gray_roi >= VISION_PROFILE['road_gray_min']) & (gray_roi <= VISION_PROFILE['road_gray_max']) & (b_minus_g >= road_color['b_minus_g_min']) & (b_minus_g <= road_color['b_minus_g_max']) & (g_minus_r >= road_color['g_minus_r_min']) & (g_minus_r <= road_color['g_minus_r_max'])
+    non_road = _sampled_color_mask(hsv_roi, lab_roi, 'green_grass') | _sampled_color_mask(hsv_roi, lab_roi, 'red_ground') | _sampled_color_mask(hsv_roi, lab_roi, 'blue_sky')
+    shoulder = _sampled_color_mask(hsv_roi, lab_roi, 'curb_shoulder_light_gray') & (lab_roi[:, :, 0] > COLOR_PROFILE['road_asphalt_dark_gray']['lab_median'][0] + 10.0)
+    return (road_core & ~non_road & ~shoulder).astype(np.uint8) * 255
+
+def _bridge_checkpoint(road_roi, hsv_roi):
+    candidate = (hsv_roi[:, :, 0] >= VISION_PROFILE['barrier_hue_min']) & (hsv_roi[:, :, 0] <= VISION_PROFILE['barrier_hue_max']) & (hsv_roi[:, :, 1] >= VISION_PROFILE['barrier_sat_min']) & (hsv_roi[:, :, 2] >= VISION_PROFILE['barrier_value_min']) & (hsv_roi[:, :, 2] <= VISION_PROFILE['barrier_value_max'])
+    row_ratio = np.count_nonzero(candidate, axis=1) / max(float(candidate.shape[1]), 1.0)
+    barrier_rows = row_ratio >= VISION_PROFILE['barrier_bridge_row_ratio']
+    road_roi[candidate & barrier_rows[:, None]] = 255
+
+def _opponent_state(image, timestamp, enabled):
+    if not enabled or not OPPONENT_PROFILE['enable_opponent_avoidance']:
+        return (False, 0.0, 0.0)
+    try:
+        current_time = float(timestamp)
+    except (TypeError, ValueError):
+        current_time = 0.0
+    if current_time < OPPONENT_PROFILE['near_obstacle_min_timestamp']:
+        return (False, 0.0, 0.0)
+    return detect_near_vehicle_obstacle_state(image, OPPONENT_PROFILE)
+
 def _build_masks(image, timestamp=None, enable_opp=True):
     height = image.shape[0]
     top = int(height * VISION_PROFILE['roi_top_ratio'])
@@ -227,21 +263,8 @@ def _build_masks(image, timestamp=None, enable_opp=True):
     gray_roi = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
     hsv_roi = cv2.cvtColor(roi, cv2.COLOR_BGR2HSV)
     lab_roi = cv2.cvtColor(roi, cv2.COLOR_BGR2LAB).astype(np.float32)
-    bgr_roi = roi.astype(np.float32)
-    road_color = COLOR_PROFILE['road_asphalt_dark_gray']
-    b_minus_g = bgr_roi[:, :, 0] - bgr_roi[:, :, 1]
-    g_minus_r = bgr_roi[:, :, 1] - bgr_roi[:, :, 2]
-    road_core = _sampled_color_mask(hsv_roi, lab_roi, 'road_asphalt_dark_gray') & (gray_roi >= VISION_PROFILE['road_gray_min']) & (gray_roi <= VISION_PROFILE['road_gray_max']) & (b_minus_g >= road_color['b_minus_g_min']) & (b_minus_g <= road_color['b_minus_g_max']) & (g_minus_r >= road_color['g_minus_r_min']) & (g_minus_r <= road_color['g_minus_r_max'])
-    non_road_roi = _sampled_color_mask(hsv_roi, lab_roi, 'green_grass') | _sampled_color_mask(hsv_roi, lab_roi, 'red_ground') | _sampled_color_mask(hsv_roi, lab_roi, 'blue_sky')
-    curb_roi = _sampled_color_mask(hsv_roi, lab_roi, 'curb_shoulder_light_gray') & (lab_roi[:, :, 0] > COLOR_PROFILE['road_asphalt_dark_gray']['lab_median'][0] + 10.0)
-    dark_road_roi = (road_core & ~non_road_roi & ~curb_roi).astype(np.uint8) * 255
-    road_roi = dark_road_roi.copy()
-    road_roi[non_road_roi | curb_roi] = 0
-    barrier_candidate = (hsv_roi[:, :, 0] >= VISION_PROFILE['barrier_hue_min']) & (hsv_roi[:, :, 0] <= VISION_PROFILE['barrier_hue_max']) & (hsv_roi[:, :, 1] >= VISION_PROFILE['barrier_sat_min']) & (hsv_roi[:, :, 2] >= VISION_PROFILE['barrier_value_min']) & (hsv_roi[:, :, 2] <= VISION_PROFILE['barrier_value_max'])
-    row_ratio = np.count_nonzero(barrier_candidate, axis=1) / max(float(barrier_candidate.shape[1]), 1.0)
-    barrier_rows = row_ratio >= VISION_PROFILE['barrier_bridge_row_ratio']
-    barrier_roi = barrier_candidate & barrier_rows[:, None]
-    road_roi[barrier_roi] = 255
+    road_roi = _road_surface_mask(roi, hsv_roi, lab_roi)
+    _bridge_checkpoint(road_roi, hsv_roi)
     kernel = np.ones((5, 5), dtype=np.uint8)
     road_roi = cv2.morphologyEx(road_roi, cv2.MORPH_OPEN, kernel, iterations=1)
     road_roi = cv2.morphologyEx(road_roi, cv2.MORPH_CLOSE, kernel, iterations=2)
@@ -253,16 +276,7 @@ def _build_masks(image, timestamp=None, enable_opp=True):
     edge_mask[top:, :] = edge_roi
     texture_score = clamp(float(np.std(gray_roi)) / VISION_PROFILE['texture_gray_std_scale'], 0.0, 1.0)
     mask_fill_ratio = float(np.count_nonzero(road_roi)) / max(float(road_roi.size), 1.0)
-    near_obstacle = False
-    obstacle_x = 0.0
-    obstacle_size = 0.0
-    if enable_opp and OPPONENT_PROFILE['enable_opponent_avoidance']:
-        try:
-            current_time = float(timestamp)
-        except (TypeError, ValueError):
-            current_time = 0.0
-        if current_time >= OPPONENT_PROFILE['near_obstacle_min_timestamp']:
-            (near_obstacle, obstacle_x, obstacle_size) = detect_near_vehicle_obstacle_state(image, OPPONENT_PROFILE)
+    (near_obstacle, obstacle_x, obstacle_size) = _opponent_state(image, timestamp, enable_opp)
     return (road_mask, edge_mask, texture_score, mask_fill_ratio, near_obstacle, obstacle_x, obstacle_size)
 
 def _segments_from_active(active):
@@ -558,50 +572,35 @@ def _score_scan(centers, widths, texture_score, mask_fill_ratio, fallback_count,
         debug_flags |= 2
     return (clamp(confidence, 0.0, 1.0), debug_flags)
 
-def _scan_image(image, timestamp=None, enable_opp=True):
-    if not _valid_image(image):
-        _save_frame_centers([])
-        return _empty_scan()
-    _maybe_reset_perception_by_timestamp(timestamp)
-    if _is_synthetic_grayscale_frame(image):
-        _save_frame_centers([])
-        scan = _empty_scan(debug_flags=4)
-        if enable_opp and OPPONENT_PROFILE['enable_opponent_avoidance']:
-            try:
-                current_time = float(timestamp)
-            except (TypeError, ValueError):
-                current_time = 0.0
-            if current_time >= OPPONENT_PROFILE['near_obstacle_min_timestamp']:
-                (scan.near_obstacle, scan.obstacle_x, scan.obstacle_size) = detect_near_vehicle_obstacle_state(image, OPPONENT_PROFILE)
-        return scan
-    (road_mask, edge_mask, texture_score, mask_fill_ratio, near_obstacle, obstacle_x, obstacle_size) = _build_masks(image, timestamp, enable_opp)
-    red_environment = _is_red_environment(image)
-    wide_localize_enabled = red_environment
+def _grayscale_placeholder_scan(image, timestamp, enable_opp):
+    _save_frame_centers([])
+    scan = _empty_scan(debug_flags=4)
+    (scan.near_obstacle, scan.obstacle_x, scan.obstacle_size) = _opponent_state(image, timestamp, enable_opp)
+    return scan
+
+def _collect_road_samples(road_mask, edge_mask, near_obstacle, wide_localize_enabled):
     (height, width) = road_mask.shape
     rows = np.linspace(int(height * VISION_PROFILE['scan_bottom_ratio']), int(height * VISION_PROFILE['scan_top_ratio']), int(VISION_PROFILE['scan_count']), dtype=np.int32)
-    centers = []
-    left_edges = []
-    right_edges = []
-    widths = []
+    samples = _RoadSamples([], [], [], [])
     previous_center = width * 0.5
     has_previous = False
-    fallback_count = 0
     for y in rows:
         (segment, used_fallback) = _pick_segment(road_mask, edge_mask, int(y), previous_center, has_previous, near_obstacle, wide_localize_enabled)
         if segment is None:
             continue
         (left, right) = segment
         center = (left + right) * 0.5
-        road_width = float(right - left + 1)
-        centers.append((center, float(y)))
-        left_edges.append((float(left), float(y)))
-        right_edges.append((float(right), float(y)))
-        widths.append(road_width)
+        samples.centers.append((center, float(y)))
+        samples.left_edges.append((float(left), float(y)))
+        samples.right_edges.append((float(right), float(y)))
+        samples.widths.append(float(right - left + 1))
         previous_center = center
         has_previous = True
-        if used_fallback:
-            fallback_count += 1
-    if not centers:
+        samples.fallback_count += int(used_fallback)
+    return samples
+
+def _completed_scan(samples, texture_score, mask_fill_ratio, near_obstacle, obstacle_x, obstacle_size, red_environment):
+    if not samples.centers:
         _save_frame_centers([])
         debug_flags = 4 if mask_fill_ratio < 0.015 or mask_fill_ratio > 0.92 else 1
         scan = _empty_scan(debug_flags=debug_flags)
@@ -610,11 +609,23 @@ def _scan_image(image, timestamp=None, enable_opp=True):
         scan.obstacle_size = float(obstacle_size)
         scan.red_environment = bool(red_environment)
         return scan
-    (confidence, debug_flags) = _score_scan(centers, widths, texture_score, mask_fill_ratio, fallback_count, red_environment=red_environment)
+    (confidence, debug_flags) = _score_scan(samples.centers, samples.widths, texture_score, mask_fill_ratio, samples.fallback_count, red_environment=red_environment)
     if red_environment:
         debug_flags |= _RED_ENVIRONMENT_FLAG
-    _save_frame_centers(centers)
-    return _CameraScan(np.array(centers, dtype=np.float32), np.array(left_edges, dtype=np.float32), np.array(right_edges, dtype=np.float32), float(np.median(np.array(widths, dtype=np.float32))), confidence, debug_flags=debug_flags, near_obstacle=bool(near_obstacle), obstacle_x=float(obstacle_x), obstacle_size=float(obstacle_size), red_environment=bool(red_environment))
+    _save_frame_centers(samples.centers)
+    return _CameraScan(np.array(samples.centers, dtype=np.float32), np.array(samples.left_edges, dtype=np.float32), np.array(samples.right_edges, dtype=np.float32), float(np.median(np.array(samples.widths, dtype=np.float32))), confidence, debug_flags=debug_flags, near_obstacle=bool(near_obstacle), obstacle_x=float(obstacle_x), obstacle_size=float(obstacle_size), red_environment=bool(red_environment))
+
+def _scan_image(image, timestamp=None, enable_opp=True):
+    if not _valid_image(image):
+        _save_frame_centers([])
+        return _empty_scan()
+    _maybe_reset_perception_by_timestamp(timestamp)
+    if _is_synthetic_grayscale_frame(image):
+        return _grayscale_placeholder_scan(image, timestamp, enable_opp)
+    (road_mask, edge_mask, texture_score, mask_fill_ratio, near_obstacle, obstacle_x, obstacle_size) = _build_masks(image, timestamp, enable_opp)
+    red_environment = _is_red_environment(image)
+    samples = _collect_road_samples(road_mask, edge_mask, near_obstacle, wide_localize_enabled=red_environment)
+    return _completed_scan(samples, texture_score, mask_fill_ratio, near_obstacle, obstacle_x, obstacle_size, red_environment)
 
 def _usable(scan):
     return scan.center_points.size > 0 and scan.confidence >= VISION_PROFILE['min_camera_confidence']
@@ -637,26 +648,34 @@ def _fused_obstacle(left_scan, right_scan):
     size = max((float(scan.obstacle_size) for scan in candidates))
     return (True, clamp(x, -1.0, 1.0), size)
 
+def _with_fused_obstacle(obs, left_scan, right_scan):
+    (obs.near_obstacle, obs.obstacle_x, obs.obstacle_size) = _fused_obstacle(left_scan, right_scan)
+    return obs
+
+def _merge_compatible_scans(left_scan, right_scan):
+    center_points = np.concatenate([left_scan.center_points, right_scan.center_points], axis=0)
+    left_edge_points = np.concatenate([left_scan.left_edge_points, right_scan.left_edge_points], axis=0)
+    right_edge_points = np.concatenate([left_scan.right_edge_points, right_scan.right_edge_points], axis=0)
+    weights = np.array([len(left_scan.center_points), len(right_scan.center_points)], dtype=np.float32)
+    confidence = float(np.average(np.array([left_scan.confidence, right_scan.confidence], dtype=np.float32), weights=weights))
+    road_width = float(np.average(np.array([left_scan.road_width_est, right_scan.road_width_est], dtype=np.float32), weights=weights))
+    obs = PerceptionObs(center_points, left_edge_points, right_edge_points, road_width, clamp(confidence, 0.0, 1.0), debug_flags=left_scan.debug_flags | right_scan.debug_flags)
+    return _with_fused_obstacle(obs, left_scan, right_scan)
+
 def _fuse_scans(left_scan, right_scan):
     left_ok = _usable(left_scan)
     right_ok = _usable(right_scan)
     if left_ok and (not right_ok):
-        obs = _to_obs(left_scan)
-        (obs.near_obstacle, obs.obstacle_x, obs.obstacle_size) = _fused_obstacle(left_scan, right_scan)
-        return obs
+        return _with_fused_obstacle(_to_obs(left_scan), left_scan, right_scan)
     if right_ok and (not left_ok):
-        obs = _to_obs(right_scan)
-        (obs.near_obstacle, obs.obstacle_x, obs.obstacle_size) = _fused_obstacle(left_scan, right_scan)
-        return obs
+        return _with_fused_obstacle(_to_obs(right_scan), left_scan, right_scan)
     if not left_ok and (not right_ok):
         obs = _empty_obs(debug_flags=left_scan.debug_flags | right_scan.debug_flags | 1)
-        (obs.near_obstacle, obs.obstacle_x, obs.obstacle_size) = _fused_obstacle(left_scan, right_scan)
-        return obs
+        return _with_fused_obstacle(obs, left_scan, right_scan)
     center_gap = abs(_near_center(left_scan) - _near_center(right_scan))
     merge_gap = 640.0 * VISION_PROFILE['fusion_merge_gap']
     merge_confidence = VISION_PROFILE['fusion_merge_min_confidence']
     confidence_gap = abs(left_scan.confidence - right_scan.confidence)
-    (near_obstacle, obstacle_x, obstacle_size) = _fused_obstacle(left_scan, right_scan)
     if center_gap >= merge_gap or left_scan.confidence < merge_confidence or right_scan.confidence < merge_confidence:
         chosen = left_scan if left_scan.confidence >= right_scan.confidence else right_scan
         flags = chosen.debug_flags
@@ -665,19 +684,8 @@ def _fuse_scans(left_scan, right_scan):
         if confidence_gap < VISION_PROFILE['fusion_confidence_margin']:
             flags |= 16
         obs = _to_obs(chosen, debug_flags=flags)
-        obs.near_obstacle = near_obstacle
-        obs.obstacle_x = obstacle_x
-        obs.obstacle_size = obstacle_size
-        return obs
-    center_points = np.concatenate([left_scan.center_points, right_scan.center_points], axis=0)
-    left_edge_points = np.concatenate([left_scan.left_edge_points, right_scan.left_edge_points], axis=0)
-    right_edge_points = np.concatenate([left_scan.right_edge_points, right_scan.right_edge_points], axis=0)
-    weights = np.array([len(left_scan.center_points), len(right_scan.center_points)], dtype=np.float32)
-    confidences = np.array([left_scan.confidence, right_scan.confidence], dtype=np.float32)
-    width_values = np.array([left_scan.road_width_est, right_scan.road_width_est], dtype=np.float32)
-    confidence = float(np.average(confidences, weights=weights))
-    road_width_est = float(np.average(width_values, weights=weights))
-    return PerceptionObs(center_points, left_edge_points, right_edge_points, road_width_est, clamp(confidence, 0.0, 1.0), debug_flags=left_scan.debug_flags | right_scan.debug_flags, near_obstacle=near_obstacle, obstacle_x=obstacle_x, obstacle_size=obstacle_size)
+        return _with_fused_obstacle(obs, left_scan, right_scan)
+    return _merge_compatible_scans(left_scan, right_scan)
 
 def _with_line_state(obs, left_img, right_img, timestamp=None, red_environment=None):
     if _valid_image(left_img) and _valid_image(right_img) and _is_synthetic_grayscale_frame(left_img) and _is_synthetic_grayscale_frame(right_img):
