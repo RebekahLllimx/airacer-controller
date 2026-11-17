@@ -91,7 +91,7 @@ def get_policy_diagnostics() -> dict:
 
 
 def _maybe_reset_policy_by_timestamp(timestamp: float, profile: dict) -> None:
-    """根据时间戳判断是否重置策略状态。"""
+    """Reset policy memory after a timestamp rollback or a long input gap."""
 
     if _STATE.last_timestamp is None:
         return
@@ -101,7 +101,7 @@ def _maybe_reset_policy_by_timestamp(timestamp: float, profile: dict) -> None:
 
 
 def _dt(timestamp: float, profile: dict) -> float:
-    """计算本帧控制间隔，首帧使用 nominal_dt。"""
+    """Return the control interval, using the nominal interval on the first frame."""
 
     if _STATE.last_timestamp is None:
         return profile["nominal_dt"]
@@ -109,19 +109,13 @@ def _dt(timestamp: float, profile: dict) -> float:
 
 
 def _signed_power(value: float, power: float) -> float:
-    """保留符号的幂函数。"""
+    """Raise a value to a power while preserving its sign."""
 
     return math.copysign(abs(value) ** power, value)
 
 
 def _road_direction_sign(track: TrackState) -> float:
-    """估计应朝哪一侧打轮才能回到路面（左负右正）。
-
-    功能：为脱困提供"路在哪边"的方向，而不是写死方向或盲目反打上一帧。
-    参数：`track` 是当前赛道状态。
-    返回：`+1.0`（向右回到路面）或 `-1.0`（向左回到路面）。
-    逻辑：优先用当前横向误差；贴墙丢线时退回最近一次可信偏置；都不可用时反打上一帧舵角脱离。
-    """
+    """Estimate which steering direction returns the vehicle to the road."""
 
     reference = track.lateral_error
     if abs(reference) <= 0.05:
@@ -134,13 +128,7 @@ def _road_direction_sign(track: TrackState) -> float:
 
 
 def _margin_escape_sign(track: TrackState, fallback: float) -> float:
-    """根据单侧边界余量选择脱困方向。
-
-    功能：在近障碍或贴栏卡死时，优先往余量更大的方向打轮。
-    参数：`track` 提供左右近处余量，`fallback` 是几何偏置推断出的方向。
-    返回：`+1.0` 表示右打，`-1.0` 表示左打。
-    逻辑：只有左右余量差足够明显时才覆盖几何方向，避免噪声边界点造成反复换向。
-    """
+    """Prefer the side with more boundary clearance during recovery."""
 
     margin_gap = abs(track.left_margin_near - track.right_margin_near)
     if margin_gap <= 0.08:
@@ -151,13 +139,7 @@ def _margin_escape_sign(track: TrackState, fallback: float) -> float:
 
 
 def _contact_escape_sign(track: TrackState, fallback: float, profile: dict) -> float:
-    """在推断贴边时选择远离栏杆的脱困方向。
-
-    功能：把碰撞/贴边推断和常规循线分开，只有单侧余量极小时才按边界反向。
-    参数：`track` 提供左右近处余量，`fallback` 是道路几何推断方向，`profile` 是控制参数。
-    返回：`+1.0` 表示右打，`-1.0` 表示左打。
-    逻辑：余量不够明确时保留几何方向；左侧近乎贴住就右打，右侧近乎贴住就左打。
-    """
+    """Steer away from a boundary only when one-sided contact is credible."""
 
     min_margin = min(track.left_margin_near, track.right_margin_near)
     margin_gap = abs(track.left_margin_near - track.right_margin_near)
@@ -167,13 +149,7 @@ def _contact_escape_sign(track: TrackState, fallback: float, profile: dict) -> f
 
 
 def _control_signals(track: TrackState, profile: dict) -> dict:
-    """计算策略使用的风险分量。
-
-    功能：拆分弯道、偏移、置信度和丢线风险。
-    参数：`track` 是赛道状态，`profile` 是控制参数。
-    返回：包含各类风险和综合风险的字典。
-    逻辑：速度和模式选择共享这些风险，避免重复估算。
-    """
+    """Derive shared curve, offset, confidence, margin, and loss risks."""
 
     curve_risk = clamp(
         max(abs(track.curvature), abs(track.heading_error), abs(track.lookahead_error)),
@@ -214,13 +190,7 @@ def _control_signals(track: TrackState, profile: dict) -> dict:
 
 
 def _is_straight_candidate(track: TrackState, signals: dict, profile: dict) -> bool:
-    """判断当前几何是否足够像直道。
-
-    功能：给直道提速和 lost 惯性滑行提供稳定判据。
-    参数：`track` 是赛道状态，`signals` 是风险分量，`profile` 是控制参数。
-    返回：当前非丢线帧是否可以视为直道。
-    逻辑：主要看曲率、前瞻和横向偏移；heading 只做宽松兜底，避免噪声把直道判坏。
-    """
+    """Return whether a visible road is straight and centered enough for cruising."""
 
     if track.lost or track.confidence < profile["lost_confidence"]:
         return False
@@ -236,13 +206,7 @@ def _is_straight_candidate(track: TrackState, signals: dict, profile: dict) -> b
 def _is_lost_straight_coast_candidate(
     track: TrackState, signals: dict, profile: dict
 ) -> bool:
-    """判断丢线帧是否仍可按直道惯性滑行。
-
-    功能：处理蓝门/天空造成的无观测帧，避免直道速度掉回 0.24。
-    参数：`track` 是已衰减的丢线状态，`signals` 是风险分量，`profile` 是控制参数。
-    返回：当前 lost 帧是否可安全维持直道速度。
-    逻辑：只接受居中、曲率/前瞻低、heading 不大且上一帧舵角很小的 lost 帧。
-    """
+    """Allow a brief blind coast only when recent geometry still resembles a straight."""
 
     if not track.lost:
         return False
@@ -259,13 +223,7 @@ def _is_lost_straight_coast_candidate(
 def _update_straight_memory(
     track: TrackState, signals: dict, mode: str, profile: dict
 ) -> bool:
-    """更新直道记忆并返回本帧是否允许直道滑行。
-
-    功能：让蓝门/天空造成的短暂 lost 不再立刻砸到 `lost_speed`。
-    参数：当前赛道状态、风险信号、驾驶状态和参数表。
-    返回：是否仍处在最近确认过的直道窗口内。
-    逻辑：非 lost 直道帧刷新记忆；lost 帧可消耗记忆，或在几何和上一帧舵角都很直时直接滑行。
-    """
+    """Maintain a short straight-road memory across temporary visual dropout."""
 
     if _is_straight_candidate(track, signals, profile):
         _STATE.straight_memory_frames = int(profile["straight_memory_frames"])
@@ -282,13 +240,7 @@ def _update_straight_memory(
 def _select_mode(
     track: TrackState, signals: dict, timestamp: float, profile: dict
 ) -> str:
-    """选择内部驾驶状态。
-
-    功能：在 lost、recovering、hard_turn、correcting、cruise 之间切换。
-    参数：`track` 是赛道状态，`signals` 是风险分量，`timestamp` 是平台时间。
-    返回：内部状态名。
-    逻辑：丢线优先，其次恢复缓冲、急弯、回中和巡航。
-    """
+    """Select lost, recovering, hard-turn, correcting, or cruise state."""
 
     del timestamp
     if track.lost or track.confidence < profile["lost_confidence"]:
@@ -332,13 +284,7 @@ def _select_mode(
 
 
 def _apply_inside_margin_guard(raw: float, track: TrackState, profile: dict) -> float:
-    """根据近处边界余量限制继续向内打轮。
-
-    功能：弯中贴近内侧护栏时，把目标舵角往外侧推。
-    参数：`raw` 是未限幅目标舵角，`track` 提供左右边界余量。
-    返回：保护后的目标舵角。
-    逻辑：只在舵角方向指向低余量一侧时生效，避免直道无端左右摆。
-    """
+    """Limit steering toward a boundary whose near-field margin is already small."""
 
     warning = max(float(profile["inside_margin_warning"]), 1e-6)
     if raw > 0.0:
@@ -487,7 +433,7 @@ def _target_steering(
 
 
 def _steering_smoothing_for_mode(mode: str, profile: dict) -> float:
-    """读取当前驾驶状态对应的转向平滑系数。"""
+    """Return the steering smoothing coefficient for the active drive state."""
 
     if mode == "cruise":
         return profile["steering_smoothing_cruise"]
@@ -501,13 +447,7 @@ def _steering_smoothing_for_mode(mode: str, profile: dict) -> float:
 def _smooth_steering(
     target: float, mode: str, timestamp: float, profile: dict
 ) -> float:
-    """平滑转向并限制变化率。
-
-    功能：按驾驶状态和速度限制方向盘跳变。
-    参数：`target` 是目标转向，`mode` 是内部状态，`timestamp` 是平台时间。
-    返回：平滑后的转向值。
-    逻辑：高速时限制更强，恢复状态更平滑。
-    """
+    """Smooth steering and apply speed-dependent rate and magnitude limits."""
 
     alpha = _steering_smoothing_for_mode(mode, profile)
     smoothed = _STATE.last_steering * alpha + target * (1.0 - alpha)
@@ -516,7 +456,7 @@ def _smooth_steering(
     speed_factor = 1.0 - 0.35 * speed_norm
     max_delta = profile["max_steering_delta"] * dt_factor * speed_factor
     delta = clamp(smoothed - _STATE.last_steering, -max_delta, max_delta)
-    # 速度相关的转向幅值上限：高速时收舵，避免同样舵角在高速下半径过小切内线。
+    # Reduce steering range at speed to avoid an overly tight corner radius.
     max_abs = profile["max_abs_steering"] * (
         1.0 - profile["steering_speed_cap_scale"] * speed_norm
     )
@@ -532,14 +472,7 @@ def _target_speed(
     profile: dict,
     straight_memory_active: bool = False,
 ) -> float:
-    """计算目标速度。
-
-    功能：用乘法降速组合弯道、偏移、置信度和转向风险。
-    参数：`track` 是赛道状态，`signals` 是风险分量，`mode` 是内部状态，`steering` 是当前转向；
-        `straight_memory_active` 表示最近刚确认过直道。
-    返回：目标速度比例。
-    逻辑：模式只限制速度上限，正常速度由风险因子相乘得到。
-    """
+    """Combine geometry and confidence risks into a bounded target speed."""
 
     if mode == "lost":
         if straight_memory_active:
@@ -580,21 +513,20 @@ def _target_speed(
         target = min(target, profile["hard_turn_speed"] + centered_bonus)
     elif mode == "correcting":
         target = min(target, profile["correction_speed"])
-    # 直道提速：几何明确为直时，速度不该被偏低的 mask 置信度或 recovering 限速压住。
-    # 判断主要看 curvature/lookahead/offset，heading 只做宽松兜底，避免噪声挡住直道加速。
+    # Confirmed straight geometry can override a noisy mask-confidence slowdown.
     straight = straight_memory_active or _is_straight_candidate(track, signals, profile)
     if straight:
         target = max(target, profile["straight_speed"])
     if timestamp < profile["start_caution_seconds"]:
         target = min(target, profile["start_speed"])
-    # 多车：正前方挡车要让速，偏侧车更像并行/被超场景，只轻微让速，避免一被超过就彻底放弃。
+    # A centered opponent demands more braking than a vehicle passing at the side.
     if profile.get("enable_opponent", True) and track.near_obstacle:
         center_x = max(float(profile.get("opponent_center_x", 0.28)), 1e-6)
         centered = clamp(1.0 - abs(float(track.obstacle_x)) / center_x, 0.0, 1.0)
         front_factor = float(profile.get("opponent_speed_factor", 0.72))
         side_factor = float(profile.get("opponent_side_speed_factor", front_factor))
         target *= side_factor + (front_factor - side_factor) * centered
-        # 弯道+正前方对手车：更激进减速，防止多车弯道碰撞卡死；偏侧车不叠这么重。
+        # Add a stronger slowdown for a centered opponent inside a corner.
         if centered >= 0.35 and signals["curve_risk"] >= profile.get(
             "opponent_corner_curve_threshold", 0.25
         ):
@@ -603,13 +535,7 @@ def _target_speed(
 
 
 def _smooth_speed(target: float, timestamp: float, profile: dict) -> float:
-    """平滑速度并限制加减速。
-
-    功能：让加速慢、减速快，减少速度跳变。
-    参数：`target` 是目标速度，`timestamp` 是平台时间，`profile` 是控制参数。
-    返回：平滑后的速度比例。
-    逻辑：上升和下降使用不同变化率，入弯能更快降速。
-    """
+    """Rate-limit speed with slower acceleration and faster braking."""
 
     dt = _dt(timestamp, profile)
     delta = target - _STATE.last_speed
@@ -625,7 +551,7 @@ def _smooth_speed(target: float, timestamp: float, profile: dict) -> float:
 
 
 def _track_signature(track: TrackState) -> tuple[float, float, float, float, float]:
-    """提取用于判断画面是否停滞的几何签名。"""
+    """Return the geometry signature used to detect a frozen view."""
 
     return (
         track.lateral_error,
@@ -989,13 +915,7 @@ def _update_policy_state(
     timestamp: float,
     profile: dict,
 ) -> None:
-    """写回策略跨帧状态。
-
-    功能：维护丢线计数、恢复缓冲、最近可信方向和上一帧控制量。
-    参数：`track` 是赛道状态，`steering` 和 `speed` 是本帧输出。
-    返回：无。
-    逻辑：刚从丢线恢复时保守若干帧；高置信时更新恢复方向偏置。
-    """
+    """Persist loss, recovery, bias, and command memory for the next frame."""
 
     if track.lost:
         _STATE.lost_frames += 1
@@ -1150,13 +1070,7 @@ def _apply_opponent_avoidance(
 def decide_control(
     track: TrackState, timestamp: float, mode: str = "no_other_cars"
 ) -> ControlCmd:
-    """计算最终控制命令。
-
-    功能：按唯一策略生成转向和速度。
-    参数：`track` 是赛道状态，`timestamp` 是平台时间，`mode` 仅为接口兼容字段。
-    返回：`ControlCmd`，包含 `steering` 和 `speed`。
-    逻辑：所有 mode 和赛道都使用同一套参数；内部用状态机协同转向、速度和恢复策略。
-    """
+    """Generate one steering and speed command from the current track state."""
 
     profile = get_profile(mode)
     timestamp = float(timestamp)
@@ -1187,12 +1101,11 @@ def decide_control(
     _STATE.last_signals = dict(signals)
     _STATE.last_straight_memory_active = bool(straight_memory_active)
     speed = _smooth_speed(target_speed, timestamp, profile)
-    # 低速贴墙脱困两条赛道都启用；依赖可靠几何的急弯/大偏移脱困仍只在 complex(red)。
+    # Geometry-specific recovery is enabled only in the red complex environment.
     steering, speed, drive_mode = _escape_if_stalled(
         track, signals, steering, speed, drive_mode, profile, track.red_environment
     )
-    # 跨帧状态记录修正前的舵角：白线修正只作用于最终输出，平滑、限速和脱困
-    # 判据都不感知它（与 R011 在入口层后置修正时的动力学一致）。
+    # Persist pre-line steering so lane correction remains a bounded output-stage aid.
     _update_policy_state(track, steering, speed, drive_mode, timestamp, profile)
     line_correction = _lane_line_correction(
         track, signals, drive_mode, LINE_FOLLOW_PROFILE, timestamp
