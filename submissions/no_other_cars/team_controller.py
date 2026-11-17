@@ -1,4 +1,4 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import math
 import cv2
 import numpy as np
@@ -1016,7 +1016,7 @@ class PolicyState:
     last_mode_reason: str = 'start'
     last_target_steering: float = 0.0
     last_target_speed: float = 0.0
-    last_signals: dict | None = None
+    last_signals: dict = field(default_factory=dict)
     last_straight_memory_active: bool = False
     line_streak: int = 0
     line_last_offset: float = 0.0
@@ -1036,9 +1036,15 @@ class PolicyState:
     zero_speed_streak: int = 0
     motion_stall_streak: int = 0
 
-    def __post_init__(self):
-        if self.last_signals is None:
-            self.last_signals = {}
+@dataclass(frozen=True)
+class EscapePlan:
+    trigger_frames: int
+    duration_frames: int
+    steering: float
+    speed: float
+    steering_sign: float
+    reverse_frames: int = 0
+    require_confidence: bool = True
 _STATE = PolicyState()
 
 def reset_policy_state():
@@ -1174,9 +1180,7 @@ def _apply_inside_margin_guard(raw, track, profile):
         return capped + pressure * profile['inside_margin_outward_gain']
     return raw
 
-def _target_steering(track, signals, mode, profile):
-    center_term = track.lateral_error * profile['gain_lateral']
-    lookahead_term = track.lookahead_error * profile['gain_lookahead'] + track.heading_error * profile['gain_heading'] + track.curvature * profile['gain_curve']
+def _turn_arrival(track, mode, profile):
     speed_norm = clamp(_STATE.last_speed / max(profile['max_speed'], 1e-06), 0.0, 1.0)
     arrival_ref = max(profile['turn_in_lateral_ref'] * (1.0 - profile['turn_in_speed_comp'] * speed_norm), 0.001)
     instant_arrival = clamp(abs(track.lateral_error) / arrival_ref, 0.0, 1.0)
@@ -1184,8 +1188,9 @@ def _target_steering(track, signals, mode, profile):
         _STATE.turn_in_latch = max(instant_arrival, _STATE.turn_in_latch)
     else:
         _STATE.turn_in_latch = max(instant_arrival, _STATE.turn_in_latch * profile['turn_in_hold_decay'])
-    corner_arrival = _STATE.turn_in_latch
-    lookahead_term *= corner_arrival
+    return _STATE.turn_in_latch
+
+def _relieve_inside_corner(lookahead_term, track, mode, profile):
     instant_relief = 0.0
     if profile.get('corner_relief_enable') and track.red_environment and (mode == 'hard_turn') and (track.line_confidence >= profile['corner_relief_conf_min']) and (abs(track.line_offset) >= profile['corner_relief_offset_min']) and (track.line_offset * lookahead_term < 0.0):
         instant_relief = clamp((abs(track.line_offset) - profile['corner_relief_offset_min']) * profile['corner_relief_gain'], 0.0, profile['corner_relief_max']) * clamp(track.line_confidence, 0.0, 1.0)
@@ -1193,8 +1198,9 @@ def _target_steering(track, signals, mode, profile):
         _STATE.corner_relief = max(instant_relief, _STATE.corner_relief * profile['corner_relief_hold_decay'])
     else:
         _STATE.corner_relief = 0.0
-    if _STATE.corner_relief > 0.0:
-        lookahead_term *= 1.0 - _STATE.corner_relief
+    return lookahead_term * (1.0 - _STATE.corner_relief)
+
+def _blend_steering_terms(center_term, lookahead_term, track, signals, profile):
     near_weight = profile['near_weight_base'] + signals['offset_risk'] * profile['near_weight_offset_boost']
     far_weight = profile['far_weight_base'] + signals['curve_risk'] * profile['far_weight_curve_boost']
     if center_term * lookahead_term < 0.0:
@@ -1203,6 +1209,9 @@ def _target_steering(track, signals, mode, profile):
     raw = near_weight * center_term + far_weight * lookahead_term
     raw += profile['gain_lateral_nonlinear'] * _signed_power(track.lateral_error, 1.7)
     raw += profile['gain_curve_nonlinear'] * _signed_power(track.curvature, 1.5)
+    return raw
+
+def _apply_mode_steering(raw, track, mode, profile):
     if mode == 'lost':
         raw = 0.5 * _STATE.last_steering + 0.2 * _STATE.last_good_bias
     elif mode == 'recovering':
@@ -1213,7 +1222,15 @@ def _target_steering(track, signals, mode, profile):
         raw *= profile['hard_turn_steering_scale']
     if track.red_environment and track.lateral_error > profile['inside_left_lateral_min'] and (track.heading_error < profile['inside_left_heading_max']) and (track.curvature < profile['inside_left_curvature_max']):
         raw = max(raw, profile['inside_left_steering_limit'])
-    raw = _apply_inside_margin_guard(raw, track, profile)
+    return _apply_inside_margin_guard(raw, track, profile)
+
+def _target_steering(track, signals, mode, profile):
+    center_term = track.lateral_error * profile['gain_lateral']
+    lookahead_term = track.lookahead_error * profile['gain_lookahead'] + track.heading_error * profile['gain_heading'] + track.curvature * profile['gain_curve']
+    lookahead_term *= _turn_arrival(track, mode, profile)
+    lookahead_term = _relieve_inside_corner(lookahead_term, track, mode, profile)
+    raw = _blend_steering_terms(center_term, lookahead_term, track, signals, profile)
+    raw = _apply_mode_steering(raw, track, mode, profile)
     if abs(raw) < profile['steering_deadzone']:
         raw = 0.0
     max_abs = profile['max_abs_steering']
@@ -1284,92 +1301,78 @@ def _smooth_speed(target, timestamp, profile):
 def _track_signature(track):
     return (track.lateral_error, track.heading_error, track.curvature, track.lookahead_error, track.confidence)
 
-def _escape_if_stalled(track, signals, steering, speed, mode, profile, allow_geometry_escape):
+def _track_signature_delta(track):
     signature = _track_signature(track)
     if _STATE.last_track_signature is None:
-        signature_delta = 1.0
+        delta = 1.0
     else:
-        signature_delta = sum((abs(a - b) for (a, b) in zip(signature, _STATE.last_track_signature)))
+        delta = sum((abs(current - previous) for (current, previous) in zip(signature, _STATE.last_track_signature)))
     _STATE.last_track_signature = signature
-    if _STATE.escape_frames > 0:
-        _STATE.escape_frames -= 1
-        wiggle = 1.0 if _STATE.escape_frames // 10 % 2 == 0 else -1.0
-        wiggle_amplitude = float(profile.get('escape_wiggle_amplitude', 0.2))
-        max_abs = profile['max_abs_steering']
-        elapsed = _STATE.escape_total_frames - _STATE.escape_frames
-        if elapsed <= _STATE.escape_reverse_frames:
-            phase_sign = -_STATE.escape_steering_sign
-            speed_out = -float(profile.get('escape_reverse_speed', 0.4))
-        else:
-            phase_sign = _STATE.escape_steering_sign
-            speed_out = max(speed, _STATE.escape_speed)
-        escape_steering = phase_sign * (_STATE.escape_steering_magnitude + wiggle * wiggle_amplitude)
-        return (clamp(escape_steering, -max_abs, max_abs), speed_out, 'escaping')
-    high_turn = signals['curve_risk'] >= profile['escape_curve_threshold'] or abs(steering) >= profile['escape_steering_threshold']
+    return delta
+
+def _continue_local_escape(speed, profile):
+    if _STATE.escape_frames <= 0:
+        return None
+    _STATE.escape_frames -= 1
+    wiggle = 1.0 if _STATE.escape_frames // 10 % 2 == 0 else -1.0
+    wiggle_amplitude = float(profile.get('escape_wiggle_amplitude', 0.2))
+    elapsed = _STATE.escape_total_frames - _STATE.escape_frames
+    if elapsed <= _STATE.escape_reverse_frames:
+        phase_sign = -_STATE.escape_steering_sign
+        speed_out = -float(profile.get('escape_reverse_speed', 0.4))
+    else:
+        phase_sign = _STATE.escape_steering_sign
+        speed_out = max(speed, _STATE.escape_speed)
+    steering = phase_sign * (_STATE.escape_steering_magnitude + wiggle * wiggle_amplitude)
+    return (clamp(steering, -profile['max_abs_steering'], profile['max_abs_steering']), speed_out, 'escaping')
+
+def _escape_plan(track, signals, steering, speed, mode, profile, allow_geometry_escape):
+    base_sign = _road_direction_sign(track)
     aligned_offset = signals['offset_risk'] >= profile['escape_offset_threshold'] and track.lateral_error * track.lookahead_error >= profile['escape_offset_lookahead_alignment']
-    large_offset_stall = allow_geometry_escape and mode in {'hard_turn', 'correcting'} and (signals['offset_risk'] >= profile['escape_offset_threshold']) and (speed <= profile['escape_offset_speed_threshold']) and (abs(track.heading_error) <= profile['escape_offset_heading_abs_max']) and (abs(track.curvature) <= profile['escape_offset_curve_abs_max']) and (track.lateral_error * track.lookahead_error >= profile['escape_offset_lookahead_alignment'])
-    low_speed_stall = speed <= profile['escape_low_speed_threshold']
-    pinned_stall = abs(track.lateral_error) >= profile['escape_pinned_lateral_min'] and abs(steering) >= profile['escape_pinned_steering_min'] and (speed <= profile['escape_pinned_speed_max'])
-    boundary_obstacle_stall = allow_geometry_escape and track.near_obstacle and (mode in {'hard_turn', 'correcting'}) and (signals['margin_risk'] >= profile['escape_boundary_margin_risk']) and (min(track.left_margin_near, track.right_margin_near) <= profile['escape_boundary_margin_max']) and (speed <= profile['escape_boundary_speed_max']) and (not track.lost) and (track.confidence >= profile['escape_boundary_min_confidence'])
+    large_offset = allow_geometry_escape and mode in {'hard_turn', 'correcting'} and aligned_offset and (speed <= profile['escape_offset_speed_threshold']) and (abs(track.heading_error) <= profile['escape_offset_heading_abs_max']) and (abs(track.curvature) <= profile['escape_offset_curve_abs_max'])
+    boundary_obstacle = allow_geometry_escape and track.near_obstacle and (mode in {'hard_turn', 'correcting'}) and (signals['margin_risk'] >= profile['escape_boundary_margin_risk']) and (min(track.left_margin_near, track.right_margin_near) <= profile['escape_boundary_margin_max']) and (speed <= profile['escape_boundary_speed_max']) and (not track.lost) and (track.confidence >= profile['escape_boundary_min_confidence'])
+    high_turn = signals['curve_risk'] >= profile['escape_curve_threshold'] or abs(steering) >= profile['escape_steering_threshold']
+    slow_hard_turn = allow_geometry_escape and mode == 'hard_turn' and high_turn and (not aligned_offset) and (speed <= profile['escape_turn_speed_max'])
+    pinned = abs(track.lateral_error) >= profile['escape_pinned_lateral_min'] and abs(steering) >= profile['escape_pinned_steering_min'] and (speed <= profile['escape_pinned_speed_max'])
+    low_speed = speed <= profile['escape_low_speed_threshold']
+    if large_offset:
+        return EscapePlan(int(profile['escape_offset_trigger_frames']), int(profile['escape_offset_frames']), profile['escape_offset_steering'], profile['escape_offset_speed'], base_sign)
+    if boundary_obstacle:
+        return EscapePlan(int(profile['escape_boundary_trigger_frames']), int(profile['escape_boundary_frames']), profile['escape_boundary_steering'], profile['escape_boundary_speed'], _contact_escape_sign(track, base_sign, profile), int(profile.get('escape_boundary_reverse_frames', 0)), False)
+    if slow_hard_turn:
+        return EscapePlan(int(profile['escape_trigger_frames']), int(profile['escape_turn_frames']), profile['escape_turn_steering'], profile['escape_turn_speed'], base_sign)
+    if pinned:
+        return EscapePlan(int(profile['escape_pinned_trigger_frames']), int(profile['escape_pinned_frames']), profile['escape_pinned_steering'], profile['escape_pinned_speed'], _contact_escape_sign(track, base_sign, profile), int(profile.get('escape_pinned_reverse_frames', 0)))
+    if low_speed:
+        return EscapePlan(int(profile['escape_low_speed_trigger_frames']), int(profile['escape_low_speed_frames']), profile['escape_low_speed_steering'], profile['escape_low_speed_speed'], _contact_escape_sign(track, base_sign, profile), int(profile.get('escape_low_speed_reverse_frames', 0)), False)
+    return None
+
+def _start_local_escape(plan):
+    _STATE.stall_frames = 0
+    _STATE.escape_steering_sign = plan.steering_sign
+    _STATE.escape_steering_magnitude = plan.steering
+    _STATE.escape_speed = plan.speed
+    _STATE.escape_frames = plan.duration_frames
+    _STATE.escape_total_frames = plan.duration_frames
+    _STATE.escape_reverse_frames = min(plan.reverse_frames, plan.duration_frames // 2)
+
+def _escape_if_stalled(track, signals, steering, speed, mode, profile, allow_geometry_escape):
+    signature_delta = _track_signature_delta(track)
+    active_escape = _continue_local_escape(speed, profile)
+    if active_escape is not None:
+        return active_escape
+    plan = _escape_plan(track, signals, steering, speed, mode, profile, allow_geometry_escape)
+    confidence_ok = plan is not None and (not plan.require_confidence or (not track.lost and track.confidence >= profile['escape_min_confidence']))
     stable_view = signature_delta <= profile['escape_signature_delta']
-    escape_sign = _road_direction_sign(track)
-    should_count_stall = False
-    require_confidence = True
-    trigger_frames = int(profile['escape_trigger_frames'])
-    escape_frames = int(profile['escape_turn_frames'])
-    escape_steering = profile['escape_turn_steering']
-    escape_speed = profile['escape_turn_speed']
-    escape_reverse_frames = 0
-    if large_offset_stall:
-        should_count_stall = True
-        trigger_frames = int(profile['escape_offset_trigger_frames'])
-        escape_frames = int(profile['escape_offset_frames'])
-        escape_steering = profile['escape_offset_steering']
-        escape_speed = profile['escape_offset_speed']
-    elif boundary_obstacle_stall:
-        should_count_stall = True
-        require_confidence = False
-        trigger_frames = int(profile['escape_boundary_trigger_frames'])
-        escape_frames = int(profile['escape_boundary_frames'])
-        escape_steering = profile['escape_boundary_steering']
-        escape_speed = profile['escape_boundary_speed']
-        escape_reverse_frames = int(profile.get('escape_boundary_reverse_frames', 0))
-        escape_sign = _contact_escape_sign(track, escape_sign, profile)
-    elif allow_geometry_escape and mode == 'hard_turn' and high_turn and (not aligned_offset) and (speed <= profile['escape_turn_speed_max']):
-        should_count_stall = True
-    elif pinned_stall:
-        should_count_stall = True
-        trigger_frames = int(profile['escape_pinned_trigger_frames'])
-        escape_frames = int(profile['escape_pinned_frames'])
-        escape_steering = profile['escape_pinned_steering']
-        escape_speed = profile['escape_pinned_speed']
-        escape_reverse_frames = int(profile.get('escape_pinned_reverse_frames', 0))
-        escape_sign = _contact_escape_sign(track, escape_sign, profile)
-    elif low_speed_stall:
-        should_count_stall = True
-        require_confidence = False
-        trigger_frames = int(profile['escape_low_speed_trigger_frames'])
-        escape_frames = int(profile['escape_low_speed_frames'])
-        escape_steering = profile['escape_low_speed_steering']
-        escape_speed = profile['escape_low_speed_speed']
-        escape_reverse_frames = int(profile.get('escape_low_speed_reverse_frames', 0))
-        escape_sign = _contact_escape_sign(track, escape_sign, profile)
-    confidence_ok = not require_confidence or (not track.lost and track.confidence >= profile['escape_min_confidence'])
-    if should_count_stall and stable_view and confidence_ok:
+    if plan is not None and stable_view and confidence_ok:
         _STATE.stall_frames += 1
     else:
         _STATE.stall_frames = 0
-    if _STATE.stall_frames >= trigger_frames:
-        _STATE.stall_frames = 0
-        _STATE.escape_steering_sign = escape_sign
-        _STATE.escape_steering_magnitude = escape_steering
-        _STATE.escape_speed = escape_speed
-        _STATE.escape_frames = escape_frames
-        _STATE.escape_total_frames = escape_frames
-        _STATE.escape_reverse_frames = min(escape_reverse_frames, escape_frames // 2)
+    if plan is not None and _STATE.stall_frames >= plan.trigger_frames:
+        _start_local_escape(plan)
     return (steering, speed, mode)
 
-def _lane_line_correction(track, signals, mode, profile, timestamp):
+def _line_validity(track, mode, profile, timestamp):
     normal_valid = profile['enable'] and track.line_confidence >= profile['min_confidence'] and (abs(track.line_offset) <= profile['offset_trust_max']) and (not track.near_obstacle) and (mode != 'escaping')
     startup_valid = profile['enable'] and track.red_environment and (timestamp <= profile['startup_acquire_until']) and (track.line_confidence >= profile['min_confidence']) and (profile['startup_offset_min'] <= track.line_offset <= profile['startup_offset_trust_max']) and (profile['startup_heading_min'] <= track.line_heading <= profile['startup_heading_max']) and (not track.near_obstacle) and (mode != 'escaping')
     valid = normal_valid or startup_valid
@@ -1381,35 +1384,51 @@ def _lane_line_correction(track, signals, mode, profile, timestamp):
         _STATE.line_last_offset = track.line_offset
     else:
         _STATE.line_streak = 0
-    target = 0.0
-    confirm_frames = int(profile['startup_confirm_frames'] if startup_valid and (not normal_valid) else profile['confirm_frames'])
-    active = valid and _STATE.line_streak >= confirm_frames
-    if active:
-        max_correction = profile['startup_max_correction'] if startup_valid and (not normal_valid) else profile['max_correction']
-        curve_gate = profile['startup_curve_gate'] if startup_valid and (not normal_valid) else profile['curve_gate']
-        offset_target = track.line_offset * profile['offset_gain']
-        mixed_target = offset_target + track.line_heading * profile['heading_gain']
-        curve_scale = 1.0 - clamp(signals['curve_risk'] / curve_gate, 0.0, 1.0)
-        target = clamp(mixed_target, -max_correction, max_correction) * curve_scale
-        if abs(track.line_offset) >= profile['offset_priority_min'] and track.line_offset * track.line_heading < 0.0:
-            offset_floor = clamp(offset_target * profile['offset_curve_min_scale'], -max_correction, max_correction)
-            if offset_floor * target <= 0.0 or abs(offset_floor) > abs(target):
-                target = offset_floor
-        if profile['inside_assist_enable'] and track.red_environment and (mode in {'hard_turn', 'correcting'}) and (_STATE.line_streak >= int(profile['inside_assist_streak_min'])) and (abs(track.line_offset) >= profile['inside_assist_offset_min']) and (track.line_offset * track.line_heading < 0.0):
-            excess = abs(track.line_offset) - profile['inside_assist_offset_min']
-            assist = math.copysign(clamp(excess * profile['inside_assist_gain'], 0.0, profile['inside_assist_max']), track.line_offset)
-            if assist * target >= 0.0:
-                target = clamp(target + assist, -max_correction, max_correction)
+    return (normal_valid, startup_valid, valid)
+
+def _line_target(track, signals, mode, profile, startup_only):
+    max_correction = profile['startup_max_correction'] if startup_only else profile['max_correction']
+    curve_gate = profile['startup_curve_gate'] if startup_only else profile['curve_gate']
+    offset_target = track.line_offset * profile['offset_gain']
+    mixed_target = offset_target + track.line_heading * profile['heading_gain']
+    curve_scale = 1.0 - clamp(signals['curve_risk'] / curve_gate, 0.0, 1.0)
+    target = clamp(mixed_target, -max_correction, max_correction) * curve_scale
+    opposing_heading = track.line_offset * track.line_heading < 0.0
+    if abs(track.line_offset) >= profile['offset_priority_min'] and opposing_heading:
+        offset_floor = clamp(offset_target * profile['offset_curve_min_scale'], -max_correction, max_correction)
+        if offset_floor * target <= 0.0 or abs(offset_floor) > abs(target):
+            target = offset_floor
+    if profile['inside_assist_enable'] and track.red_environment and (mode in {'hard_turn', 'correcting'}) and (_STATE.line_streak >= int(profile['inside_assist_streak_min'])) and (abs(track.line_offset) >= profile['inside_assist_offset_min']) and opposing_heading:
+        excess = abs(track.line_offset) - profile['inside_assist_offset_min']
+        assist = math.copysign(clamp(excess * profile['inside_assist_gain'], 0.0, profile['inside_assist_max']), track.line_offset)
+        if assist * target >= 0.0:
+            target = clamp(target + assist, -max_correction, max_correction)
+    return target
+
+def _line_hold_correction(active, mode, profile):
     turn_mode = mode in {'hard_turn', 'correcting'}
     if active:
         _STATE.line_hold_frames = int(profile['hold_frames']) if turn_mode and abs(_STATE.line_last_offset) >= profile['hold_offset_min'] else 0
-    elif _STATE.line_hold_frames > 0 and turn_mode:
+        return None
+    if _STATE.line_hold_frames > 0 and turn_mode:
         _STATE.line_hold_frames -= 1
         _STATE.line_correction *= profile['hold_decay']
         return clamp(_STATE.line_correction, -profile['max_correction'], profile['max_correction'])
-    else:
-        _STATE.line_hold_frames = 0
-    if startup_valid and (not normal_valid):
+    _STATE.line_hold_frames = 0
+    return None
+
+def _lane_line_correction(track, signals, mode, profile, timestamp):
+    (normal_valid, startup_valid, valid) = _line_validity(track, mode, profile, timestamp)
+    target = 0.0
+    startup_only = startup_valid and (not normal_valid)
+    confirm_frames = int(profile['startup_confirm_frames'] if startup_only else profile['confirm_frames'])
+    active = valid and _STATE.line_streak >= confirm_frames
+    if active:
+        target = _line_target(track, signals, mode, profile, startup_only)
+    held = _line_hold_correction(active, mode, profile)
+    if held is not None:
+        return held
+    if startup_only:
         alpha = profile['startup_smoothing']
     elif not valid and timestamp <= profile['startup_acquire_until'] and (_STATE.line_correction > 0.0):
         alpha = profile['startup_decay']

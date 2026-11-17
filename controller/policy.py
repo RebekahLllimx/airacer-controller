@@ -1,7 +1,7 @@
 """Stateful steering, speed planning, and recovery policy."""
 
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from controller.common import ControlCmd, TrackState, clamp
 from controller.params import LINE_FOLLOW_PROFILE, get_profile
@@ -32,7 +32,7 @@ class PolicyState:
     last_mode_reason: str = "start"
     last_target_steering: float = 0.0
     last_target_speed: float = 0.0
-    last_signals: dict | None = None
+    last_signals: dict = field(default_factory=dict)
     last_straight_memory_active: bool = False
     line_streak: int = 0
     line_last_offset: float = 0.0
@@ -52,9 +52,18 @@ class PolicyState:
     zero_speed_streak: int = 0
     motion_stall_streak: int = 0
 
-    def __post_init__(self) -> None:
-        if self.last_signals is None:
-            self.last_signals = {}
+
+@dataclass(frozen=True)
+class EscapePlan:
+    """Configuration selected for one stalled-vehicle recovery attempt."""
+
+    trigger_frames: int
+    duration_frames: int
+    steering: float
+    speed: float
+    steering_sign: float
+    reverse_frames: int = 0
+    require_confidence: bool = True
 
 
 _STATE = PolicyState()
@@ -347,39 +356,11 @@ def _apply_inside_margin_guard(raw: float, track: TrackState, profile: dict) -> 
     return raw
 
 
-def _target_steering(
-    track: TrackState, signals: dict, mode: str, profile: dict
-) -> float:
-    """计算目标转向。
+def _turn_arrival(track: TrackState, mode: str, profile: dict) -> float:
+    """Update the speed-aware corner-entry latch and return its gate value."""
 
-    功能：把回中项和前瞻项分开组合，并按状态修正。
-    参数：`track` 是赛道状态，`signals` 是风险分量，`mode` 是内部驾驶状态。
-    返回：裁剪到 `[-1, 1]` 的目标转向。
-    逻辑：偏移大时更看近处，弯道明显时更看前方；两者冲突时优先回中。
-    """
-
-    center_term = track.lateral_error * profile["gain_lateral"]
-    lookahead_term = (
-        track.lookahead_error * profile["gain_lookahead"]
-        + track.heading_error * profile["gain_heading"]
-        + track.curvature * profile["gain_curve"]
-    )
-    # 入弯时机门控（R042 重做）：远处 road-mask 预瞄项是"切内线"的来源——它在直道接近段就因
-    # 远处的路已弯而变大，把车提前打进弯里。旧门控用 |heading| 当"弯到了没"的判据，但 heading
-    # 正是远处弯量、在接近段就涨起来，于是门提前全开、毫无迟滞（实测 t224 撞栏弯：heading=-0.39
-    # 时门已 0.94，而车还居中、还骑在白线上）。
-    # 正确判据是"车是否已经物理到达弯"——只看近处 lateral 漂移：直道接近段它≈0，只有当车跟着
-    # 直线开到弯口、真正开始偏离时才长起来。R043 删除 floor 后直接用 arrival 缩放远处预瞄项：
-    # 车未到弯口时可把预瞄项压到 0，沿线开进弯口、略外移（out-in-out），再触发"晚而狠"的转向。
-    # 不用 |line_offset| 当 arrival——它分不清"外移到弯口"和"已经切到内侧"，后者会把门开更大、越切越深。
-    # R046：删除 R044 的"弯有多急(curve_risk)"调制。它在入弯初期把弯误判成缓弯——接近段 curve_risk
-    # 还低（远处弯量没在视野里发育起来），sharpness 小 → arrival_ref 被放大 1.5x+ → 过度迟滞；等
-    # curve_risk 涨上来时车已深入弯里，才急打轮、半径反而很大、还冲到外侧、速度也掉。根因是
-    # "入弯瞬间没有信号能区分缓/急弯"，所以这种基于瞬时 curve_risk 的调制原理上就修不好，直接删。
-    # 回到纯近处 lateral 漂移驱动的门控。
-    # R047 速度耦合：过弯越快、半径越大——高速进弯时车在"门还没开"的入口段就冲出很远（实测
-    # line_offset 入口冲到 −0.59）。把入弯参考随速度收小（faster → ref 小 → arrival 早开 → 早转），
-    # 让"入弯提前量"随速度成比例，弥补高速多走的距离。speed_norm=0 时退化为纯 lateral 门控。
+    # Lateral displacement is a better indication of physical corner arrival than
+    # far-field heading, which rises while the vehicle is still on the approach.
     speed_norm = clamp(_STATE.last_speed / max(profile["max_speed"], 1e-6), 0.0, 1.0)
     arrival_ref = max(
         profile["turn_in_lateral_ref"]
@@ -387,29 +368,20 @@ def _target_steering(
         1e-3,
     )
     instant_arrival = clamp(abs(track.lateral_error) / arrival_ref, 0.0, 1.0)
-    # R048 弯中保持 + 出弯迟滞：入弯门控是 lookahead_term 上的连续乘子，但 `lateral`（road-mask 近处
-    # 漂移）在弯中会反复回落到≈0（mask 重新对正路面），门控就把远处预瞄项收掉 → 车转一半忽然收轮、
-    # 转不到位、半径变大、还得事后找回中线（费速度）；出弯时远处看到直路、门控也跟着提前收。
-    # 用 latch 保持最近的 arrival 峰值并按 hold_decay 缓慢衰减：弯中 lateral 短暂回落不收门（持续转），
-    # 出弯远处项自然回落时再迟滞收轮（用户要的"出弯 lag"）。直道上远处项≈0，latch 高也不会乱打。
     if mode == "hard_turn":
-        # 已进入弯（committed）：把门 ratchet 到最近峰值并保持，不让它在弯中随 lateral 回落而泄掉
-        # （否则长 hairpin 里门一直≈0.15、车整段欠转、半径大）。入弯延迟仍在——hard_turn 早段 lateral
-        # 还没长起来时 instant_arrival 小，latch 从小值起步、随 lateral 长大才 ratchet 上去。
         _STATE.turn_in_latch = max(instant_arrival, _STATE.turn_in_latch)
     else:
-        # 出弯/直道：按 hold_decay 迟滞收门（出弯 lag），同时仍跟随 instant（正常入弯延迟）。
         _STATE.turn_in_latch = max(
             instant_arrival, _STATE.turn_in_latch * profile["turn_in_hold_decay"]
         )
-    corner_arrival = _STATE.turn_in_latch
-    lookahead_term *= corner_arrival
-    # R040（2026-06-12，接触日志直接定位 t≈228.6 撞内栏）：弯中最大的舵角来自远处 road-mask
-    # 预瞄项（lookahead+heading 可达 -0.99），它把车拉到接近满左锁；可信白线却显示车已切到
-    # 内侧（offset 与远处项反号）。事后 ±0.34 有界修正顶不动 -0.76 的预瞄，只会和它打成
-    # 来回甩的极限环，最终过冲撞内栏。这里直接在源头按"白线证明车已多内侧 × 置信度"成比例
-    # 削弱远处项——既放大半径又消除那个来回甩。只缩远处转向项，不碰 risk/mode/速度/入弯门控，
-    # 保持 R013/R014 的"白线不污染主链路风险与速度"边界。**走线改动，需人上车终判。**
+    return _STATE.turn_in_latch
+
+
+def _relieve_inside_corner(
+    lookahead_term: float, track: TrackState, mode: str, profile: dict
+) -> float:
+    """Reduce inward lookahead steering when a trusted line shows over-cutting."""
+
     instant_relief = 0.0
     if (
         profile.get("corner_relief_enable")
@@ -425,8 +397,6 @@ def _target_steering(
             0.0,
             profile["corner_relief_max"],
         ) * clamp(track.line_confidence, 0.0, 1.0)
-    # R041 保持/迟滞：relief 瞬时触发后按 hold_decay 衰减保持，使 line_offset 在弯中来回穿 0 时
-    # 远处项仍被压住，不再被 road-mask 猛拉回 -0.76 → 打破撞内栏的极限环。离开 hard_turn 即清零。
     if (
         profile.get("corner_relief_enable")
         and track.red_environment
@@ -437,8 +407,18 @@ def _target_steering(
         )
     else:
         _STATE.corner_relief = 0.0
-    if _STATE.corner_relief > 0.0:
-        lookahead_term *= 1.0 - _STATE.corner_relief
+    return lookahead_term * (1.0 - _STATE.corner_relief)
+
+
+def _blend_steering_terms(
+    center_term: float,
+    lookahead_term: float,
+    track: TrackState,
+    signals: dict,
+    profile: dict,
+) -> float:
+    """Blend near-field centering and far-field lookahead without over-cutting."""
+
     near_weight = (
         profile["near_weight_base"]
         + signals["offset_risk"] * profile["near_weight_offset_boost"]
@@ -455,14 +435,18 @@ def _target_steering(
             profile["far_conflict_min_scale"],
             1.0 - conflict_offset * profile["far_conflict_offset_scale"],
         )
-
     raw = near_weight * center_term + far_weight * lookahead_term
     raw += profile["gain_lateral_nonlinear"] * _signed_power(track.lateral_error, 1.7)
     raw += profile["gain_curve_nonlinear"] * _signed_power(track.curvature, 1.5)
+    return raw
+
+
+def _apply_mode_steering(
+    raw: float, track: TrackState, mode: str, profile: dict
+) -> float:
+    """Apply state-machine-specific steering behavior to the blended target."""
 
     if mode == "lost":
-        # 不再死保上一帧舵角（贴墙时那正是把车怼进墙的舵），向最近可信道路方向
-        # 偏置靠拢并整体衰减，让车松开栏杆等感知恢复，真正的反向由脱困状态机负责。
         raw = 0.50 * _STATE.last_steering + 0.20 * _STATE.last_good_bias
     elif mode == "recovering":
         raw *= 0.70
@@ -470,7 +454,6 @@ def _target_steering(
         raw += track.lateral_error * 0.25
     elif mode == "hard_turn":
         raw *= profile["hard_turn_steering_scale"]
-
     if (
         track.red_environment
         and track.lateral_error > profile["inside_left_lateral_min"]
@@ -478,8 +461,24 @@ def _target_steering(
         and track.curvature < profile["inside_left_curvature_max"]
     ):
         raw = max(raw, profile["inside_left_steering_limit"])
+    return _apply_inside_margin_guard(raw, track, profile)
 
-    raw = _apply_inside_margin_guard(raw, track, profile)
+
+def _target_steering(
+    track: TrackState, signals: dict, mode: str, profile: dict
+) -> float:
+    """Compute the bounded steering target from track geometry and drive state."""
+
+    center_term = track.lateral_error * profile["gain_lateral"]
+    lookahead_term = (
+        track.lookahead_error * profile["gain_lookahead"]
+        + track.heading_error * profile["gain_heading"]
+        + track.curvature * profile["gain_curve"]
+    )
+    lookahead_term *= _turn_arrival(track, mode, profile)
+    lookahead_term = _relieve_inside_corner(lookahead_term, track, mode, profile)
+    raw = _blend_steering_terms(center_term, lookahead_term, track, signals, profile)
+    raw = _apply_mode_steering(raw, track, mode, profile)
 
     if abs(raw) < profile["steering_deadzone"]:
         raw = 0.0
@@ -637,7 +636,49 @@ def _track_signature(track: TrackState) -> tuple[float, float, float, float, flo
     )
 
 
-def _escape_if_stalled(
+def _track_signature_delta(track: TrackState) -> float:
+    """Update the stored geometry signature and return frame-to-frame motion."""
+
+    signature = _track_signature(track)
+    if _STATE.last_track_signature is None:
+        delta = 1.0
+    else:
+        delta = sum(
+            abs(current - previous)
+            for current, previous in zip(signature, _STATE.last_track_signature)
+        )
+    _STATE.last_track_signature = signature
+    return delta
+
+
+def _continue_local_escape(
+    speed: float, profile: dict
+) -> tuple[float, float, str] | None:
+    """Advance an active local recovery maneuver."""
+
+    if _STATE.escape_frames <= 0:
+        return None
+    _STATE.escape_frames -= 1
+    wiggle = 1.0 if (_STATE.escape_frames // 10) % 2 == 0 else -1.0
+    wiggle_amplitude = float(profile.get("escape_wiggle_amplitude", 0.20))
+    elapsed = _STATE.escape_total_frames - _STATE.escape_frames
+    if elapsed <= _STATE.escape_reverse_frames:
+        phase_sign = -_STATE.escape_steering_sign
+        speed_out = -float(profile.get("escape_reverse_speed", 0.40))
+    else:
+        phase_sign = _STATE.escape_steering_sign
+        speed_out = max(speed, _STATE.escape_speed)
+    steering = phase_sign * (
+        _STATE.escape_steering_magnitude + wiggle * wiggle_amplitude
+    )
+    return (
+        clamp(steering, -profile["max_abs_steering"], profile["max_abs_steering"]),
+        speed_out,
+        "escaping",
+    )
+
+
+def _escape_plan(
     track: TrackState,
     signals: dict,
     steering: float,
@@ -645,79 +686,24 @@ def _escape_if_stalled(
     mode: str,
     profile: dict,
     allow_geometry_escape: bool,
-) -> tuple[float, float, str]:
-    """在顶住边界时短暂脱困。
+) -> EscapePlan | None:
+    """Select the first recovery plan whose stall condition is satisfied."""
 
-    功能：检测急弯大转向卡边，或长时间低速且几何签名几乎不变的状态。
-    参数：当前赛道状态、风险信号、已平滑的转向和速度、内部模式、参数表，
-        `allow_geometry_escape` 控制是否启用依赖可靠几何的急弯/大偏移脱困（仅 complex）。
-    返回：可能被覆盖后的 `(steering, speed, mode)`。
-    逻辑：脱困方向统一朝感知到的路面一侧（远离顶住的栏杆），不再写死方向或盲目反打；
-        低速贴墙本就是低置信状态，所以低速脱困放宽置信度门槛，basic 也启用。
-    """
-
-    signature = _track_signature(track)
-    if _STATE.last_track_signature is None:
-        signature_delta = 1.0
-    else:
-        signature_delta = sum(
-            abs(a - b) for a, b in zip(signature, _STATE.last_track_signature)
-        )
-    _STATE.last_track_signature = signature
-
-    if _STATE.escape_frames > 0:
-        _STATE.escape_frames -= 1
-        # 脱困期间交替打轮（左右摆动），打破物理卡死的静摩擦。
-        # 每 10 帧切换一次方向，叠加在已设置的基准舵角上。
-        wiggle = 1.0 if (_STATE.escape_frames // 10) % 2 == 0 else -1.0
-        wiggle_amplitude = float(profile.get("escape_wiggle_amplitude", 0.20))
-        max_abs = profile["max_abs_steering"]
-        # 倒车相位：脱困的领头若干帧先后退（负速度）拉开与卡点的距离。仅卡死类脱困
-        # 设了 reverse_frames>0。三点掉头式：自行车模型 dθ/dt=(v/L)tanδ，倒车 v<0 时
-        # 要让车头转向开阔侧，方向盘需反向打（与前冲相位相反），否则车头会越倒越扎进夹角。
-        elapsed = _STATE.escape_total_frames - _STATE.escape_frames
-        if elapsed <= _STATE.escape_reverse_frames:
-            phase_sign = -_STATE.escape_steering_sign
-            speed_out = -float(profile.get("escape_reverse_speed", 0.40))
-        else:
-            phase_sign = _STATE.escape_steering_sign
-            speed_out = max(speed, _STATE.escape_speed)
-        escape_steering = phase_sign * (
-            _STATE.escape_steering_magnitude + wiggle * wiggle_amplitude
-        )
-        return (
-            clamp(escape_steering, -max_abs, max_abs),
-            speed_out,
-            "escaping",
-        )
-
-    high_turn = (
-        signals["curve_risk"] >= profile["escape_curve_threshold"]
-        or abs(steering) >= profile["escape_steering_threshold"]
-    )
+    base_sign = _road_direction_sign(track)
     aligned_offset = (
         signals["offset_risk"] >= profile["escape_offset_threshold"]
         and track.lateral_error * track.lookahead_error
         >= profile["escape_offset_lookahead_alignment"]
     )
-    large_offset_stall = (
+    large_offset = (
         allow_geometry_escape
         and mode in {"hard_turn", "correcting"}
-        and signals["offset_risk"] >= profile["escape_offset_threshold"]
+        and aligned_offset
         and speed <= profile["escape_offset_speed_threshold"]
         and abs(track.heading_error) <= profile["escape_offset_heading_abs_max"]
         and abs(track.curvature) <= profile["escape_offset_curve_abs_max"]
-        and track.lateral_error * track.lookahead_error
-        >= profile["escape_offset_lookahead_alignment"]
     )
-    low_speed_stall = speed <= profile["escape_low_speed_threshold"]
-    # 顶住栏杆但速度还没塌到低速阈值（落在 low_speed 覆盖空档）：几何冻结 + 大偏移 + 大反向打轮。
-    pinned_stall = (
-        abs(track.lateral_error) >= profile["escape_pinned_lateral_min"]
-        and abs(steering) >= profile["escape_pinned_steering_min"]
-        and speed <= profile["escape_pinned_speed_max"]
-    )
-    boundary_obstacle_stall = (
+    boundary_obstacle = (
         allow_geometry_escape
         and track.near_obstacle
         and mode in {"hard_turn", "correcting"}
@@ -728,106 +714,121 @@ def _escape_if_stalled(
         and not track.lost
         and track.confidence >= profile["escape_boundary_min_confidence"]
     )
-    stable_view = signature_delta <= profile["escape_signature_delta"]
-
-    # 统一脱困方向：先按几何判断路在哪边；若推断已贴住单侧边界，则强制远离低余量一侧。
-    escape_sign = _road_direction_sign(track)
-
-    should_count_stall = False
-    require_confidence = True
-    trigger_frames = int(profile["escape_trigger_frames"])
-    escape_frames = int(profile["escape_turn_frames"])
-    escape_steering = profile["escape_turn_steering"]
-    escape_speed = profile["escape_turn_speed"]
-    # 倒车领头帧：默认 0（漂移/巡弯类脱困不倒车）；卡死类（pinned/low_speed/boundary）
-    # 才先倒车拉开距离。
-    escape_reverse_frames = 0
-    if large_offset_stall:
-        should_count_stall = True
-        trigger_frames = int(profile["escape_offset_trigger_frames"])
-        escape_frames = int(profile["escape_offset_frames"])
-        escape_steering = profile["escape_offset_steering"]
-        escape_speed = profile["escape_offset_speed"]
-    elif boundary_obstacle_stall:
-        # complex 后段 R017：近处静态车和右侧边界同时进入视野，车物理近停但策略速度仍在
-        # 0.22-0.23，既没进 low_speed，也达不到 pinned 的大横向偏移。单侧余量为 0 时应更早脱困。
-        should_count_stall = True
-        require_confidence = False
-        trigger_frames = int(profile["escape_boundary_trigger_frames"])
-        escape_frames = int(profile["escape_boundary_frames"])
-        escape_steering = profile["escape_boundary_steering"]
-        escape_speed = profile["escape_boundary_speed"]
-        escape_reverse_frames = int(profile.get("escape_boundary_reverse_frames", 0))
-        escape_sign = _contact_escape_sign(track, escape_sign, profile)
-    elif (
+    high_turn = (
+        signals["curve_risk"] >= profile["escape_curve_threshold"]
+        or abs(steering) >= profile["escape_steering_threshold"]
+    )
+    slow_hard_turn = (
         allow_geometry_escape
         and mode == "hard_turn"
         and high_turn
         and not aligned_offset
         and speed <= profile["escape_turn_speed_max"]
-    ):
-        # 平稳巡弯同样满足"高弯量+签名稳定+高置信"，必须加低速门槛才算卡边
-        # （complex 实跑在正常左弯中误触发过本路径，escape 强行打轮导致撞栏）。
-        should_count_stall = True
-    elif pinned_stall:
-        # basic/complex 都启用：几何冻结地顶住栏杆、speed 又没低到触发 low_speed 时的兜底。
-        should_count_stall = True
-        trigger_frames = int(profile["escape_pinned_trigger_frames"])
-        escape_frames = int(profile["escape_pinned_frames"])
-        escape_steering = profile["escape_pinned_steering"]
-        escape_speed = profile["escape_pinned_speed"]
-        escape_reverse_frames = int(profile.get("escape_pinned_reverse_frames", 0))
-        escape_sign = _contact_escape_sign(track, escape_sign, profile)
-    elif low_speed_stall:
-        should_count_stall = True
-        # 贴墙被卡本就是低置信/丢线状态，放宽门槛，否则脱困永远进不来。
-        require_confidence = False
-        trigger_frames = int(profile["escape_low_speed_trigger_frames"])
-        escape_frames = int(profile["escape_low_speed_frames"])
-        escape_steering = profile["escape_low_speed_steering"]
-        escape_speed = profile["escape_low_speed_speed"]
-        escape_reverse_frames = int(profile.get("escape_low_speed_reverse_frames", 0))
-        escape_sign = _contact_escape_sign(track, escape_sign, profile)
-
-    confidence_ok = (not require_confidence) or (
-        not track.lost and track.confidence >= profile["escape_min_confidence"]
     )
-    if should_count_stall and stable_view and confidence_ok:
+    pinned = (
+        abs(track.lateral_error) >= profile["escape_pinned_lateral_min"]
+        and abs(steering) >= profile["escape_pinned_steering_min"]
+        and speed <= profile["escape_pinned_speed_max"]
+    )
+    low_speed = speed <= profile["escape_low_speed_threshold"]
+
+    if large_offset:
+        return EscapePlan(
+            int(profile["escape_offset_trigger_frames"]),
+            int(profile["escape_offset_frames"]),
+            profile["escape_offset_steering"],
+            profile["escape_offset_speed"],
+            base_sign,
+        )
+    if boundary_obstacle:
+        return EscapePlan(
+            int(profile["escape_boundary_trigger_frames"]),
+            int(profile["escape_boundary_frames"]),
+            profile["escape_boundary_steering"],
+            profile["escape_boundary_speed"],
+            _contact_escape_sign(track, base_sign, profile),
+            int(profile.get("escape_boundary_reverse_frames", 0)),
+            False,
+        )
+    if slow_hard_turn:
+        return EscapePlan(
+            int(profile["escape_trigger_frames"]),
+            int(profile["escape_turn_frames"]),
+            profile["escape_turn_steering"],
+            profile["escape_turn_speed"],
+            base_sign,
+        )
+    if pinned:
+        return EscapePlan(
+            int(profile["escape_pinned_trigger_frames"]),
+            int(profile["escape_pinned_frames"]),
+            profile["escape_pinned_steering"],
+            profile["escape_pinned_speed"],
+            _contact_escape_sign(track, base_sign, profile),
+            int(profile.get("escape_pinned_reverse_frames", 0)),
+        )
+    if low_speed:
+        return EscapePlan(
+            int(profile["escape_low_speed_trigger_frames"]),
+            int(profile["escape_low_speed_frames"]),
+            profile["escape_low_speed_steering"],
+            profile["escape_low_speed_speed"],
+            _contact_escape_sign(track, base_sign, profile),
+            int(profile.get("escape_low_speed_reverse_frames", 0)),
+            False,
+        )
+    return None
+
+
+def _start_local_escape(plan: EscapePlan) -> None:
+    """Store a selected plan as the active local recovery maneuver."""
+
+    _STATE.stall_frames = 0
+    _STATE.escape_steering_sign = plan.steering_sign
+    _STATE.escape_steering_magnitude = plan.steering
+    _STATE.escape_speed = plan.speed
+    _STATE.escape_frames = plan.duration_frames
+    _STATE.escape_total_frames = plan.duration_frames
+    _STATE.escape_reverse_frames = min(plan.reverse_frames, plan.duration_frames // 2)
+
+
+def _escape_if_stalled(
+    track: TrackState,
+    signals: dict,
+    steering: float,
+    speed: float,
+    mode: str,
+    profile: dict,
+    allow_geometry_escape: bool,
+) -> tuple[float, float, str]:
+    """Detect a stationary view and start or continue a bounded recovery plan."""
+
+    signature_delta = _track_signature_delta(track)
+    active_escape = _continue_local_escape(speed, profile)
+    if active_escape is not None:
+        return active_escape
+
+    plan = _escape_plan(
+        track, signals, steering, speed, mode, profile, allow_geometry_escape
+    )
+    confidence_ok = plan is not None and (
+        not plan.require_confidence
+        or (not track.lost and track.confidence >= profile["escape_min_confidence"])
+    )
+    stable_view = signature_delta <= profile["escape_signature_delta"]
+    if plan is not None and stable_view and confidence_ok:
         _STATE.stall_frames += 1
     else:
         _STATE.stall_frames = 0
-
-    if _STATE.stall_frames >= trigger_frames:
-        _STATE.stall_frames = 0
-        _STATE.escape_steering_sign = escape_sign
-        _STATE.escape_steering_magnitude = escape_steering
-        _STATE.escape_speed = escape_speed
-        _STATE.escape_frames = escape_frames
-        _STATE.escape_total_frames = escape_frames
-        # 倒车帧数不超过总帧数的一半，保证后半段一定有前冲把车开出去。
-        _STATE.escape_reverse_frames = min(escape_reverse_frames, escape_frames // 2)
-
+    if plan is not None and _STATE.stall_frames >= plan.trigger_frames:
+        _start_local_escape(plan)
     return steering, speed, mode
 
 
-def _lane_line_correction(
-    track: TrackState,
-    signals: dict,
-    mode: str,
-    profile: dict,
-    timestamp: float,
-) -> float:
-    """白线可信时计算后置舵角修正（R011 验证的形态 + 信任门控）。
-
-    功能：让车身中线追向白色虚线，作为最终舵角上的有界微调。
-    参数：`track` 携带感知层的双目白线状态，`signals` 提供弯道风险，`mode` 是本帧驾驶状态，
-    `timestamp` 用于限制发车捕获窗口。
-    返回：平滑后的舵角修正；白线不可信时向 0 衰减。
-    逻辑：只修正最终输出，不进入 risk/mode/速度/入弯门控——R013/R014 证明
-    白线一旦改写控制目标，会抬高 offset_risk、骗开入弯门控并压低直道速度。
-    信任门控针对 2026-06-11 实跑取证的三类误锁：白色护栏（|offset| 大）、
-    白车/斑马线（near_obstacle）、弯中错误线段（单帧出现、帧间突变、高弯量时直线拟合失真）。
-    """
+def _line_validity(
+    track: TrackState, mode: str, profile: dict, timestamp: float
+) -> tuple[bool, bool, bool]:
+    """Classify a lane-line observation as normal, startup-only, or invalid."""
 
     normal_valid = (
         profile["enable"]
@@ -864,67 +865,63 @@ def _lane_line_correction(
         _STATE.line_last_offset = track.line_offset
     else:
         _STATE.line_streak = 0
+    return normal_valid, startup_valid, valid
 
-    target = 0.0
-    confirm_frames = int(
-        profile["startup_confirm_frames"]
-        if startup_valid and not normal_valid
-        else profile["confirm_frames"]
+
+def _line_target(
+    track: TrackState,
+    signals: dict,
+    mode: str,
+    profile: dict,
+    startup_only: bool,
+) -> float:
+    """Compute a bounded lane-line correction from a confirmed observation."""
+
+    max_correction = (
+        profile["startup_max_correction"] if startup_only else profile["max_correction"]
     )
-    active = valid and _STATE.line_streak >= confirm_frames
-    if active:
-        max_correction = (
-            profile["startup_max_correction"]
-            if startup_valid and not normal_valid
-            else profile["max_correction"]
+    curve_gate = (
+        profile["startup_curve_gate"] if startup_only else profile["curve_gate"]
+    )
+    offset_target = track.line_offset * profile["offset_gain"]
+    mixed_target = offset_target + track.line_heading * profile["heading_gain"]
+    curve_scale = 1.0 - clamp(signals["curve_risk"] / curve_gate, 0.0, 1.0)
+    target = clamp(mixed_target, -max_correction, max_correction) * curve_scale
+    opposing_heading = track.line_offset * track.line_heading < 0.0
+    if abs(track.line_offset) >= profile["offset_priority_min"] and opposing_heading:
+        # Preserve a minimum offset correction when line slope points inward.
+        offset_floor = clamp(
+            offset_target * profile["offset_curve_min_scale"],
+            -max_correction,
+            max_correction,
         )
-        curve_gate = (
-            profile["startup_curve_gate"]
-            if startup_valid and not normal_valid
-            else profile["curve_gate"]
+        if offset_floor * target <= 0.0 or abs(offset_floor) > abs(target):
+            target = offset_floor
+    if (
+        profile["inside_assist_enable"]
+        and track.red_environment
+        and mode in {"hard_turn", "correcting"}
+        and _STATE.line_streak >= int(profile["inside_assist_streak_min"])
+        and abs(track.line_offset) >= profile["inside_assist_offset_min"]
+        and opposing_heading
+    ):
+        excess = abs(track.line_offset) - profile["inside_assist_offset_min"]
+        assist = math.copysign(
+            clamp(
+                excess * profile["inside_assist_gain"],
+                0.0,
+                profile["inside_assist_max"],
+            ),
+            track.line_offset,
         )
-        offset_target = track.line_offset * profile["offset_gain"]
-        mixed_target = offset_target + track.line_heading * profile["heading_gain"]
-        curve_scale = 1.0 - clamp(signals["curve_risk"] / curve_gate, 0.0, 1.0)
-        target = clamp(mixed_target, -max_correction, max_correction) * curve_scale
-        if (
-            abs(track.line_offset) >= profile["offset_priority_min"]
-            and track.line_offset * track.line_heading < 0.0
-        ):
-            # R027：弯中 line_heading 可与 offset 回中方向相反。弯很急时仍至少保留一部分
-            # 纯 offset 修正，让车先回到白线附近，再相信斜率。
-            offset_floor = clamp(
-                offset_target * profile["offset_curve_min_scale"],
-                -max_correction,
-                max_correction,
-            )
-            if offset_floor * target <= 0.0 or abs(offset_floor) > abs(target):
-                target = offset_floor
-        # R039：弯中可信白线连续多帧显示车确在内侧（|offset| 大、与 heading 反号）时，curve_scale
-        # 会把上面的回中修正压得很弱，不足以抵消 road-mask 的弯道向内预判。叠加一个有界“向外辅助”，
-        # 方向恒为把车推回白线一侧（远离内栏），叠加后仍受 max_correction 钳制。
-        if (
-            profile["inside_assist_enable"]
-            and track.red_environment
-            and mode in {"hard_turn", "correcting"}
-            and _STATE.line_streak >= int(profile["inside_assist_streak_min"])
-            and abs(track.line_offset) >= profile["inside_assist_offset_min"]
-            and track.line_offset * track.line_heading < 0.0
-        ):
-            excess = abs(track.line_offset) - profile["inside_assist_offset_min"]
-            assist = math.copysign(
-                clamp(
-                    excess * profile["inside_assist_gain"],
-                    0.0,
-                    profile["inside_assist_max"],
-                ),
-                track.line_offset,
-            )
-            if assist * target >= 0.0:
-                target = clamp(target + assist, -max_correction, max_correction)
+        if assist * target >= 0.0:
+            target = clamp(target + assist, -max_correction, max_correction)
+    return target
 
-    # R039：弯中白线短暂丢置信（虚线间隙）时，保持上一段向外修正并衰减，避免空档里 road-mask
-    # 弯道预判继续把车往内切。只在 hard_turn/correcting 且上一段可信白线确显示车已偏到内侧时启用。
+
+def _line_hold_correction(active: bool, mode: str, profile: dict) -> float | None:
+    """Hold a recent line correction across short dashed-line gaps."""
+
     turn_mode = mode in {"hard_turn", "correcting"}
     if active:
         _STATE.line_hold_frames = (
@@ -932,7 +929,8 @@ def _lane_line_correction(
             if turn_mode and abs(_STATE.line_last_offset) >= profile["hold_offset_min"]
             else 0
         )
-    elif _STATE.line_hold_frames > 0 and turn_mode:
+        return None
+    if _STATE.line_hold_frames > 0 and turn_mode:
         _STATE.line_hold_frames -= 1
         _STATE.line_correction *= profile["hold_decay"]
         return clamp(
@@ -940,10 +938,34 @@ def _lane_line_correction(
             -profile["max_correction"],
             profile["max_correction"],
         )
-    else:
-        _STATE.line_hold_frames = 0
+    _STATE.line_hold_frames = 0
+    return None
 
-    if startup_valid and not normal_valid:
+
+def _lane_line_correction(
+    track: TrackState,
+    signals: dict,
+    mode: str,
+    profile: dict,
+    timestamp: float,
+) -> float:
+    """Apply a trusted lane line as a bounded post-control steering correction."""
+
+    normal_valid, startup_valid, valid = _line_validity(track, mode, profile, timestamp)
+
+    target = 0.0
+    startup_only = startup_valid and not normal_valid
+    confirm_frames = int(
+        profile["startup_confirm_frames"] if startup_only else profile["confirm_frames"]
+    )
+    active = valid and _STATE.line_streak >= confirm_frames
+    if active:
+        target = _line_target(track, signals, mode, profile, startup_only)
+    held = _line_hold_correction(active, mode, profile)
+    if held is not None:
+        return held
+
+    if startup_only:
         alpha = profile["startup_smoothing"]
     elif (
         not valid
