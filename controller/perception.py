@@ -648,7 +648,6 @@ def _pick_segment(
     # Temporal anchors stabilize the choice when an over-wide mask contains branches.
     temporal_anchor: float | None = None
     if wide_localize_enabled and _STATE.last_frame_centers:
-        height = road_mask.shape[0]
         best_y_dist = float("inf")
         for cx, cy in _STATE.last_frame_centers:
             dist = abs(cy - float(y))

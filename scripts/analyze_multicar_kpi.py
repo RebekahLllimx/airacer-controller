@@ -328,7 +328,7 @@ def main() -> None:
     if k["used_cp"]:
         print(f"[进度]       max_progress={k['max_progress']:.2f} 圈")
     else:
-        print(f"[进度]       lap_progress 全 0（checkpoint 未生效）→ 名次用行驶距离代理")
+        print("[进度]       lap_progress 全 0（checkpoint 未生效）→ 名次用行驶距离代理")
     print(f"[超车净值]   made={k['overtakes_made']}  conceded={k['overtakes_conceded']}  "
           f"net={k['overtakes_made'] - k['overtakes_conceded']}   (start_rank={k['start_rank']}→end={k['end_rank']})")
     sd = k["squeeze_min_dist"]

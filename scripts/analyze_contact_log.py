@@ -57,7 +57,7 @@ def main():
         lo, hi = args.window
         rows = [r for r in rows if lo <= r["t"] <= hi]
 
-    print(f"================ 撞栏接触汇总 ================")
+    print("================ 撞栏接触汇总 ================")
     print(f"源文件   : {args.path}")
     print(f"接触帧   : {len(rows)}")
     if not rows:

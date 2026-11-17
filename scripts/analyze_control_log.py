@@ -290,7 +290,7 @@ def _print_summary(path: Path, rows: list[dict], integrity: str | None = None) -
     print(f"  mean(signed)={_mean(steering):+.3f}  mean|steer|={_mean([abs(s) for s in steering]):.3f}  "
           f"p95|steer|={_pct([abs(s) for s in steering],0.95):.3f}")
     print(f"  换向频率={osc_per_sec:.2f} 次/秒   累计|Δsteer|={dsteer_per_sec:.2f} /秒")
-    print(f"  （换向频率高=左右磨；理想是低频、长段同号）")
+    print("  （换向频率高=左右磨；理想是低频、长段同号）")
     print("---- 速度 ----")
     print(f"  mean={_mean(speed):.3f}  median={_pct(speed,0.5):.3f}  p95={_pct(speed,0.95):.3f}  "
           f"max={max(speed):.3f}")
@@ -303,7 +303,7 @@ def _print_summary(path: Path, rows: list[dict], integrity: str | None = None) -
           f"mean|curv|={_mean([abs(v) for v in curvature]):.3f}")
     print("---- 状态 ----")
     print(f"  lost 占比={lost_frac:.2f}")
-    print(f"  mode 占比: " + "  ".join(f"{m}={c/n:.2f}" for m, c in modes.most_common()))
+    print("  mode 占比: " + "  ".join(f"{m}={c/n:.2f}" for m, c in modes.most_common()))
     print_lost_diagnostics(rows)
     print("---- 速度-转向耦合（诊断是否被转向压速）----")
     print(f"  |steer|<0.1 均速={_mean(sp_low_steer):.3f}   |steer|>0.3 均速={_mean(sp_high_steer):.3f}")

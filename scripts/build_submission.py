@@ -220,8 +220,7 @@ def _debug_control_block(
 ) -> str:
     """Return an instrumented ``control`` function for local runs only."""
 
-    stride = max(int(dump_frame_stride), 1)
-    return f'''    try:
+    return '''    try:
         global _DBG_FRAME_INDEX
         if _DBG_FRAME_DIR is not None:
             try:
@@ -242,7 +241,7 @@ def _debug_control_block(
         steering, speed = clamp_cmd(cmd)
         if _DBG_FH is not None:
             try:
-                _DBG_FH.write(_dbg_json.dumps({{
+                _DBG_FH.write(_dbg_json.dumps({
                     "t": float(timestamp),
                     "steering": round(float(steering), 4),
                     "speed": round(float(speed), 4),
@@ -274,7 +273,7 @@ def _debug_control_block(
                     "obstacle_x": round(float(track.obstacle_x), 4),
                     "obstacle_size": round(float(track.obstacle_size), 5),
                     "frame_motion": round(float(track.frame_motion), 3),
-                }}) + "\\n")
+                }) + "\\n")
                 _DBG_FH.flush()
             except Exception:
                 pass
