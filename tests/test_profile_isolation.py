@@ -1,8 +1,4 @@
-"""Profile 隔离测试：no_other_cars(单车=R049) 不跑任何多车感知/策略路径。
-
-锁定 CLAUDE.md「Profile 隔离」约定：active profile 贯穿 perception → policy，
-no_other_cars 下既不调用对手检测、也不算 frame_motion，policy 不触发避让/倒车/force_escape。
-"""
+"""Verify that the solo profile bypasses every traffic-only code path."""
 
 import sys
 from pathlib import Path
@@ -19,7 +15,7 @@ from controller.policy import decide_control, reset_policy_state
 
 
 def _obstacle_image() -> np.ndarray:
-    # 前下方中央一大块近黑色 = 对手车身候选块。
+    # A large near-black component in the lower centre is an opponent candidate.
     img = np.full((480, 640, 3), 120, np.uint8)
     img[300:460, 250:390] = 10
     return img

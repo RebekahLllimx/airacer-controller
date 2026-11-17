@@ -493,13 +493,10 @@ WITH_OTHER_CARS_CONTROL = {
 STRATEGY_NO_OTHER_CARS = "no_other_cars"
 STRATEGY_WITH_OTHER_CARS = "with_other_cars"
 
-# no_other_cars = R049 驾驶底座（baselines/R049_turn_in_speed_best_2026-06-13，提交 commit a9ba0a1）。
-# 它与 with_other_cars 共享**核心驾驶参数**（入弯门控、速度、曲率等——同一辆车的物理一致），
-# 只在两处不同：
-#   (a) escape 用 R049 更保守的值（rebecca R050-R052 为多车把脱困调激进了，单车不需要）；
-#   (b) 所有多车增量全部关闭——对手避让/减速、倒车相位、force_escape、摆动、光流卡死检测。
-# 因此从 with_other_cars 派生再覆盖这两类键，既保证共享驾驶参数同步、又避免多车行为泄漏到单车。
-# 历史教训见 CLAUDE.md「Profile 隔离」。
+# The solo profile derives from the shared driving parameters, then restores the
+# conservative R049 escape values and disables every traffic-only feature. This
+# keeps common vehicle physics aligned without leaking opponent or reverse
+# recovery behavior into time-trial driving.
 NO_OTHER_CARS_CONTROL = dict(WITH_OTHER_CARS_CONTROL)
 NO_OTHER_CARS_CONTROL.update({
     # (a) R049 原始（更保守）的 escape 值

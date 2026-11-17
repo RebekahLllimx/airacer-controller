@@ -76,7 +76,7 @@ def _vehicle_color_mask(hsv, hsv_center, hsv_tol):
 
 def vehicle_body_mask(image, profile=None):
     params = OPPONENT_PROFILE if profile is None else profile
-    height, width = image.shape[:2]
+    (height, width) = image.shape[:2]
     y0 = int(height * params['near_obstacle_roi_top_ratio'])
     y1 = int(height * params['near_obstacle_roi_bottom_ratio'])
     x_margin = int(width * params['near_obstacle_roi_x_margin_ratio'])
@@ -91,7 +91,7 @@ def vehicle_body_mask(image, profile=None):
     bright_body = (gray > params['near_obstacle_white_gray_min']) & (saturation < params['near_obstacle_white_sat_max'])
     dark_body = (gray < params['near_obstacle_black_gray_max']) & (value < params['near_obstacle_black_value_max'])
     color_body = np.zeros(roi.shape[:2], dtype=bool)
-    for _bgr, hsv_center, hsv_tol in COLOR_PROFILE['car_body_colors']:
+    for (_bgr, hsv_center, hsv_tol) in COLOR_PROFILE['car_body_colors']:
         if hsv_center[1] < 80:
             continue
         color_body |= _vehicle_color_mask(hsv, hsv_center, hsv_tol)
@@ -106,20 +106,20 @@ def detect_near_vehicle_obstacle_state(image, profile=None):
     candidate = vehicle_body_mask(image, params)
     if not np.any(candidate):
         return (False, 0.0, 0.0)
-    count, _, stats, _ = cv2.connectedComponentsWithStats(candidate, 8)
+    (count, _, stats, _) = cv2.connectedComponentsWithStats(candidate, 8)
     min_area = float(params['near_obstacle_min_area'])
     min_width = float(params['near_obstacle_min_width'])
     min_height = float(params['near_obstacle_min_height'])
     best = None
     for index in range(1, count):
-        left, top, comp_width, comp_height, area = stats[index]
+        (left, top, comp_width, comp_height, area) = stats[index]
         if area >= min_area and comp_width >= min_width and (comp_height >= min_height):
             if best is None or area > best[-1]:
                 best = (left, top, comp_width, comp_height, area)
     if best is None:
         return (False, 0.0, 0.0)
-    left, _top, comp_width, _comp_height, area = best
-    height, width = candidate.shape[:2]
+    (left, _top, comp_width, _comp_height, area) = best
+    (height, width) = candidate.shape[:2]
     roi_top = int(height * params['near_obstacle_roi_top_ratio'])
     roi_bottom = int(height * params['near_obstacle_roi_bottom_ratio'])
     x_margin = int(width * params['near_obstacle_roi_x_margin_ratio'])
@@ -130,7 +130,7 @@ def detect_near_vehicle_obstacle_state(image, profile=None):
     return (True, float(np.clip(x_norm, -1.0, 1.0)), float(size))
 
 def detect_near_vehicle_obstacle(image, profile=None):
-    near, _x, _size = detect_near_vehicle_obstacle_state(image, profile)
+    (near, _x, _size) = detect_near_vehicle_obstacle_state(image, profile)
     return near
 _RED_ENVIRONMENT_FLAG = 32
 _LAST_FRAME_CENTERS: list[tuple[float, float]] | None = None
@@ -258,7 +258,7 @@ def _build_masks(image, timestamp=None, enable_opp=True):
         except (TypeError, ValueError):
             current_time = 0.0
         if current_time >= OPPONENT_PROFILE['near_obstacle_min_timestamp']:
-            near_obstacle, obstacle_x, obstacle_size = detect_near_vehicle_obstacle_state(image, OPPONENT_PROFILE)
+            (near_obstacle, obstacle_x, obstacle_size) = detect_near_vehicle_obstacle_state(image, OPPONENT_PROFILE)
     return (road_mask, edge_mask, texture_score, mask_fill_ratio, near_obstacle, obstacle_x, obstacle_size)
 
 def _segments_from_active(active):
@@ -287,7 +287,7 @@ def _neighbors_are_road(road_cols, left, right, profile):
 def _camera_line_state(image, profile):
     if not _valid_image(image):
         return None
-    height, width = image.shape[:2]
+    (height, width) = image.shape[:2]
     lower = int(profile['white_min'])
     chroma_max = float(profile['white_chroma_max'])
     road_dark_min = float(profile['road_dark_min'])
@@ -317,7 +317,7 @@ def _camera_line_state(image, profile):
         road_dark = (band_min >= road_dark_min) & (band_max <= road_dark_max) & (band_chroma <= road_dark_chroma_max)
         road_cols = np.count_nonzero(road_dark, axis=0) >= 1
         candidates = []
-        for left, right in _segments_from_active(active):
+        for (left, right) in _segments_from_active(active):
             segment_width = float(right - left + 1)
             if not min_width <= segment_width <= max_width:
                 continue
@@ -358,7 +358,7 @@ def _startup_single_line_candidate(line, profile, timestamp):
         current_time = float(timestamp)
     except (TypeError, ValueError):
         return None
-    offset, heading, confidence = line
+    (offset, heading, confidence) = line
     if current_time > profile['startup_acquire_until']:
         return None
     if confidence < profile['min_confidence']:
@@ -372,7 +372,7 @@ def _startup_single_line_candidate(line, profile, timestamp):
 def _red_environment_single_line_candidate(line, profile, red_environment):
     if line is None or not red_environment or (not profile['single_camera_enable']):
         return None
-    offset, heading, confidence = line
+    (offset, heading, confidence) = line
     if confidence < profile['single_camera_min_confidence']:
         return None
     if abs(offset) > profile['single_camera_offset_max']:
@@ -408,8 +408,8 @@ def _merge_close_segments(segments, max_gap=None):
     if max_gap is None:
         max_gap = int(VISION_PROFILE['max_segment_gap'])
     merged = [segments[0]]
-    for left, right in segments[1:]:
-        prev_left, prev_right = merged[-1]
+    for (left, right) in segments[1:]:
+        (prev_left, prev_right) = merged[-1]
         if left - prev_right - 1 <= max_gap:
             merged[-1] = (prev_left, right)
         else:
@@ -432,7 +432,7 @@ def _edge_fallback_segments(edge_mask, y, row_band):
     edge_segments = _segments_from_active(active)
     if len(edge_segments) < 2:
         return []
-    edge_centers = [int((left + right) * 0.5) for left, right in edge_segments]
+    edge_centers = [int((left + right) * 0.5) for (left, right) in edge_segments]
     return [(edge_centers[index], edge_centers[index + 1]) for index in range(len(edge_centers) - 1)]
 
 def _filter_segments(segments, width, max_width_ratio=None):
@@ -441,7 +441,7 @@ def _filter_segments(segments, width, max_width_ratio=None):
         max_width_ratio = VISION_PROFILE['max_segment_width_ratio']
     max_width = float(width) * float(max_width_ratio)
     filtered = []
-    for left, right in segments:
+    for (left, right) in segments:
         segment_width = float(right - left + 1)
         if min_width <= segment_width <= max_width:
             filtered.append((left, right))
@@ -455,7 +455,7 @@ def _filter_fallback_segments(segments, width, previous_center, has_previous):
     narrow_jump_limit = float(width) * VISION_PROFILE['fallback_narrow_jump_max_ratio']
     image_center = float(width) * 0.5
     filtered = []
-    for left, right in segments:
+    for (left, right) in segments:
         segment_width = float(right - left + 1)
         center = (float(left) + float(right)) * 0.5
         if segment_width >= min_width:
@@ -467,7 +467,7 @@ def _filter_fallback_segments(segments, width, previous_center, has_previous):
     return filtered
 
 def _localize_wide_segment(segment, previous_center, width, enabled=True):
-    left, right = segment
+    (left, right) = segment
     segment_width = float(right - left + 1)
     if not enabled:
         return segment
@@ -503,7 +503,7 @@ def _pick_segment(road_mask, edge_mask, y, previous_center, has_previous, near_o
     if wide_localize_enabled and _LAST_FRAME_CENTERS:
         height = road_mask.shape[0]
         best_y_dist = float('inf')
-        for cx, cy in _LAST_FRAME_CENTERS:
+        for (cx, cy) in _LAST_FRAME_CENTERS:
             dist = abs(cy - float(y))
             if dist < best_y_dist:
                 best_y_dist = dist
@@ -568,12 +568,12 @@ def _scan_image(image, timestamp=None, enable_opp=True):
             except (TypeError, ValueError):
                 current_time = 0.0
             if current_time >= OPPONENT_PROFILE['near_obstacle_min_timestamp']:
-                scan.near_obstacle, scan.obstacle_x, scan.obstacle_size = detect_near_vehicle_obstacle_state(image, OPPONENT_PROFILE)
+                (scan.near_obstacle, scan.obstacle_x, scan.obstacle_size) = detect_near_vehicle_obstacle_state(image, OPPONENT_PROFILE)
         return scan
-    road_mask, edge_mask, texture_score, mask_fill_ratio, near_obstacle, obstacle_x, obstacle_size = _build_masks(image, timestamp, enable_opp)
+    (road_mask, edge_mask, texture_score, mask_fill_ratio, near_obstacle, obstacle_x, obstacle_size) = _build_masks(image, timestamp, enable_opp)
     red_environment = _is_red_environment(image)
     wide_localize_enabled = red_environment
-    height, width = road_mask.shape
+    (height, width) = road_mask.shape
     rows = np.linspace(int(height * VISION_PROFILE['scan_bottom_ratio']), int(height * VISION_PROFILE['scan_top_ratio']), int(VISION_PROFILE['scan_count']), dtype=np.int32)
     centers = []
     left_edges = []
@@ -583,10 +583,10 @@ def _scan_image(image, timestamp=None, enable_opp=True):
     has_previous = False
     fallback_count = 0
     for y in rows:
-        segment, used_fallback = _pick_segment(road_mask, edge_mask, int(y), previous_center, has_previous, near_obstacle, wide_localize_enabled)
+        (segment, used_fallback) = _pick_segment(road_mask, edge_mask, int(y), previous_center, has_previous, near_obstacle, wide_localize_enabled)
         if segment is None:
             continue
-        left, right = segment
+        (left, right) = segment
         center = (left + right) * 0.5
         road_width = float(right - left + 1)
         centers.append((center, float(y)))
@@ -606,7 +606,7 @@ def _scan_image(image, timestamp=None, enable_opp=True):
         scan.obstacle_size = float(obstacle_size)
         scan.red_environment = bool(red_environment)
         return scan
-    confidence, debug_flags = _score_scan(centers, widths, texture_score, mask_fill_ratio, fallback_count, red_environment=red_environment)
+    (confidence, debug_flags) = _score_scan(centers, widths, texture_score, mask_fill_ratio, fallback_count, red_environment=red_environment)
     if red_environment:
         debug_flags |= _RED_ENVIRONMENT_FLAG
     _save_frame_centers(centers)
@@ -638,21 +638,21 @@ def _fuse_scans(left_scan, right_scan):
     right_ok = _usable(right_scan)
     if left_ok and (not right_ok):
         obs = _to_obs(left_scan)
-        obs.near_obstacle, obs.obstacle_x, obs.obstacle_size = _fused_obstacle(left_scan, right_scan)
+        (obs.near_obstacle, obs.obstacle_x, obs.obstacle_size) = _fused_obstacle(left_scan, right_scan)
         return obs
     if right_ok and (not left_ok):
         obs = _to_obs(right_scan)
-        obs.near_obstacle, obs.obstacle_x, obs.obstacle_size = _fused_obstacle(left_scan, right_scan)
+        (obs.near_obstacle, obs.obstacle_x, obs.obstacle_size) = _fused_obstacle(left_scan, right_scan)
         return obs
     if not left_ok and (not right_ok):
         obs = _empty_obs(debug_flags=left_scan.debug_flags | right_scan.debug_flags | 1)
-        obs.near_obstacle, obs.obstacle_x, obs.obstacle_size = _fused_obstacle(left_scan, right_scan)
+        (obs.near_obstacle, obs.obstacle_x, obs.obstacle_size) = _fused_obstacle(left_scan, right_scan)
         return obs
     center_gap = abs(_near_center(left_scan) - _near_center(right_scan))
     merge_gap = 640.0 * VISION_PROFILE['fusion_merge_gap']
     merge_confidence = VISION_PROFILE['fusion_merge_min_confidence']
     confidence_gap = abs(left_scan.confidence - right_scan.confidence)
-    near_obstacle, obstacle_x, obstacle_size = _fused_obstacle(left_scan, right_scan)
+    (near_obstacle, obstacle_x, obstacle_size) = _fused_obstacle(left_scan, right_scan)
     if center_gap >= merge_gap or left_scan.confidence < merge_confidence or right_scan.confidence < merge_confidence:
         chosen = left_scan if left_scan.confidence >= right_scan.confidence else right_scan
         flags = chosen.debug_flags
@@ -677,9 +677,9 @@ def _fuse_scans(left_scan, right_scan):
 
 def _with_line_state(obs, left_img, right_img, timestamp=None, red_environment=None):
     if _valid_image(left_img) and _valid_image(right_img) and _is_synthetic_grayscale_frame(left_img) and _is_synthetic_grayscale_frame(right_img):
-        line_offset, line_heading, line_confidence = (0.0, 0.0, 0.0)
+        (line_offset, line_heading, line_confidence) = (0.0, 0.0, 0.0)
     else:
-        line_offset, line_heading, line_confidence = _stereo_line_state(left_img, right_img, LINE_FOLLOW_PROFILE, timestamp, red_environment=red_environment)
+        (line_offset, line_heading, line_confidence) = _stereo_line_state(left_img, right_img, LINE_FOLLOW_PROFILE, timestamp, red_environment=red_environment)
     obs.line_offset = line_offset
     obs.line_heading = line_heading
     obs.line_confidence = line_confidence
@@ -855,13 +855,13 @@ def _apply_line_target(lateral_error, heading_error, lookahead_error, obs, line_
     lateral_weight = line_trust * ESTIMATOR_PROFILE['line_lateral_weight']
     heading_weight = line_trust * ESTIMATOR_PROFILE['line_heading_weight']
     lookahead_weight = line_trust * ESTIMATOR_PROFILE['line_lookahead_weight']
-    line_heading, projected_lookahead = _line_guidance_targets(obs)
+    (line_heading, projected_lookahead) = _line_guidance_targets(obs)
     return (clamp(lateral_error * (1.0 - lateral_weight) + obs.line_offset * lateral_weight, -1.0, 1.0), clamp(heading_error * (1.0 - heading_weight) + line_heading * heading_weight, -1.0, 1.0), clamp(lookahead_error * (1.0 - lookahead_weight) + projected_lookahead * lookahead_weight, -1.0, 1.0))
 
 def _line_only_track(obs, timestamp, red_environment, line_trust):
     del timestamp
     confidence = clamp(max(ESTIMATOR_PROFILE['lost_confidence'] + 0.04, obs.line_confidence * ESTIMATOR_PROFILE['line_target_confidence_scale']), 0.0, 1.0)
-    line_heading, projected_lookahead = _line_guidance_targets(obs)
+    (line_heading, projected_lookahead) = _line_guidance_targets(obs)
     lateral_error = clamp(obs.line_offset * line_trust, -1.0, 1.0)
     heading_error = clamp(line_heading * line_trust, -1.0, 1.0)
     lookahead_error = clamp(projected_lookahead * line_trust, -1.0, 1.0)
@@ -963,17 +963,17 @@ def estimate_track(obs, timestamp):
         _LAST_TRACK = track
         _LAST_TIMESTAMP = timestamp
         return track
-    x_norm, progress, y_span = _normalize_points(points)
+    (x_norm, progress, y_span) = _normalize_points(points)
     if y_span < ESTIMATOR_PROFILE['min_y_span']:
         track = _lost_track(obs.confidence, red_environment, obs)
         _LAST_TRACK = track
         _LAST_TIMESTAMP = timestamp
         return track
-    coeffs, degree = _fit_centerline(progress, x_norm)
+    (coeffs, degree) = _fit_centerline(progress, x_norm)
     lateral_error = clamp(_value_from_band(progress, x_norm, coeffs, progress <= ESTIMATOR_PROFILE['near_progress_max'], ESTIMATOR_PROFILE['near_eval_progress']), -1.0, 1.0)
     lookahead_error = clamp(_value_from_band(progress, x_norm, coeffs, progress >= ESTIMATOR_PROFILE['far_progress_min'], ESTIMATOR_PROFILE['far_eval_progress']), -1.0, 1.0)
     heading_error = _heading_from_fit(coeffs, degree)
-    lateral_error, heading_error, lookahead_error = _apply_line_target(lateral_error, heading_error, lookahead_error, obs, line_trust)
+    (lateral_error, heading_error, lookahead_error) = _apply_line_target(lateral_error, heading_error, lookahead_error, obs, line_trust)
     fit_score = _fit_error_score(progress, x_norm, coeffs)
     curvature_trust = _curvature_trust(len(points), y_span, fit_score)
     curvature = _curvature_from_fit(coeffs, degree, lateral_error, lookahead_error, curvature_trust)
@@ -1336,7 +1336,7 @@ def _escape_if_stalled(track, signals, steering, speed, mode, profile, allow_geo
     if _LAST_TRACK_SIGNATURE is None:
         signature_delta = 1.0
     else:
-        signature_delta = sum((abs(a - b) for a, b in zip(signature, _LAST_TRACK_SIGNATURE)))
+        signature_delta = sum((abs(a - b) for (a, b) in zip(signature, _LAST_TRACK_SIGNATURE)))
     _LAST_TRACK_SIGNATURE = signature
     if _ESCAPE_FRAMES > 0:
         _ESCAPE_FRAMES -= 1
@@ -1518,7 +1518,7 @@ def decide_control(track, timestamp, mode='no_other_cars'):
     _LAST_SIGNALS = dict(signals)
     _LAST_STRAIGHT_MEMORY_ACTIVE = bool(straight_memory_active)
     speed = _smooth_speed(target_speed, timestamp, profile)
-    steering, speed, drive_mode = _escape_if_stalled(track, signals, steering, speed, drive_mode, profile, track.red_environment)
+    (steering, speed, drive_mode) = _escape_if_stalled(track, signals, steering, speed, drive_mode, profile, track.red_environment)
     _update_policy_state(track, steering, speed, drive_mode, timestamp, profile)
     line_correction = _lane_line_correction(track, signals, drive_mode, LINE_FOLLOW_PROFILE, timestamp)
     final_steering = clamp(steering + line_correction, -1.0, 1.0)
@@ -1580,7 +1580,7 @@ def control(left_img, right_img, timestamp):
         obs = extract_observation(left_img, right_img, timestamp, profile=profile)
         track = estimate_track(obs, timestamp)
         cmd = decide_control(track, timestamp, mode=PROFILE)
-        steering, speed = clamp_cmd(cmd)
+        (steering, speed) = clamp_cmd(cmd)
         return (steering, speed)
     except Exception:
         return (0.0, 0.0)

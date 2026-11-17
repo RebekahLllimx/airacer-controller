@@ -405,39 +405,27 @@ def build_source(
 
 
 def parse_args():
-    """解析命令行参数。
-
-    功能：读取构建模式和输出路径。
-    参数：无。
-    返回：`argparse.Namespace`。
-    逻辑：模式只允许 no_other_cars 和 with_other_cars，未指定输出时写入对应 submissions 目录。
-    """
+    """Parse the controller profile, output path, and debug options."""
 
     parser = argparse.ArgumentParser(description="Build single-file AI Racer submission.")
     parser.add_argument("--mode", choices=sorted(DEFAULT_OUTPUTS), default="no_other_cars",
-                        help="策略：no_other_cars（单车，R049驾驶底座）或 with_other_cars（多车）")
+                        help="Controller profile: solo time trial or multi-car traffic")
     parser.add_argument("--out", type=Path, default=None)
     parser.add_argument("--debug-log", type=Path, default=None,
-                        help="本地调试构建：把每帧内部状态与命令写到该 JSONL（含 open/json，禁止上传）")
+                        help="Local debug build: write per-frame state and commands to JSONL")
     parser.add_argument("--dump-frames", type=Path, default=None,
-                        help="本地调试构建：每隔 N 帧把 left/right BGR 保存为无损 PNG（禁止上传）")
+                        help="Local debug build: save left/right BGR frames as lossless PNG files")
     parser.add_argument("--dump-frame-stride", type=int, default=10,
-                        help="--dump-frames 的存帧间隔，默认每 10 帧保存；逐帧取证时显式传 1")
+                        help="Frame interval for --dump-frames; use 1 for every frame")
     parser.add_argument("--dump-frame-start", type=float, default=None,
-                        help="只在该时间戳之后保存帧，默认从开始保存")
+                        help="Save frames at or after this simulation timestamp")
     parser.add_argument("--dump-frame-end", type=float, default=None,
-                        help="只在该时间戳之前保存帧，默认保存到结束")
+                        help="Save frames at or before this simulation timestamp")
     return parser.parse_args()
 
 
 def main() -> int:
-    """脚本入口。
-
-    功能：生成指定模式的提交文件。
-    参数：来自命令行。
-    返回：进程退出码。
-    逻辑：确定输出路径，创建父目录，写入源码并打印结果摘要。
-    """
+    """Build the requested standalone controller and print its location."""
 
     args = parse_args()
     output = args.out or DEFAULT_OUTPUTS[args.mode]
@@ -466,16 +454,16 @@ def main() -> int:
     )
     suffix_parts = []
     if debug_log:
-        suffix_parts.append(f"调试日志 → {debug_log}")
+        suffix_parts.append(f"debug log: {debug_log}")
     if dump_frames:
         window = ""
         if args.dump_frame_start is not None or args.dump_frame_end is not None:
             start = args.dump_frame_start if args.dump_frame_start is not None else "-inf"
             end = args.dump_frame_end if args.dump_frame_end is not None else "inf"
             window = f", window={start}..{end}"
-        suffix_parts.append(f"存帧目录 → {dump_frames} (stride={max(int(args.dump_frame_stride), 1)}{window})")
+        suffix_parts.append(f"frame directory: {dump_frames} (stride={max(int(args.dump_frame_stride), 1)}{window})")
     suffix = f"  ({'; '.join(suffix_parts)})" if suffix_parts else ""
-    print(f"已生成 {args.mode}: {output}{suffix}")
+    print(f"Built {args.mode}: {output}{suffix}")
     return 0
 
 

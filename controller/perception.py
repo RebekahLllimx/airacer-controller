@@ -201,14 +201,13 @@ def _build_masks(
 
     road_roi = dark_road_roi.copy()
 
-    # 统一扣除已采样的非路面颜色：草地、红地、天空、栏杆、亮路肩都不算路。
+    # Remove calibrated non-road colours and bright shoulder pixels.
     road_roi[non_road_roi | curb_roi] = 0
 
-    # checkpoint 蓝色门是半透明、横跨在赛道上的——门后就是可行驶路面。把门并入道路 mask，
-    # 避免它把走廊在中段截断（弯道里只剩近处点 → edge fallback → 朝栏杆打/剐蹭）。
-    # 注意：这会让部分含天空的帧 mask 饱和 → 被判 lost，离线 per-frame lost 率会明显升高。
-    # 但 lost 时车是直线滑行（不停车、不偏出），这是良性的——实车验证（R005/C003）是迄今最好
-    # 的一版：蓝门前大拐弯和过弯剐蹭都消失。**不要用离线 lost 率否决这版**（详见 notes.md R005）。
+    # A translucent blue checkpoint spans the driveable corridor. Merge it into
+    # the road mask so it cannot split a corner into disconnected near points and
+    # force an edge-only fallback. Some sky-heavy frames may then saturate the
+    # mask and lower confidence, so closed-loop behavior remains the decisive test.
     barrier_candidate = (
         (hsv_roi[:, :, 0] >= VISION_PROFILE["barrier_hue_min"])
         & (hsv_roi[:, :, 0] <= VISION_PROFILE["barrier_hue_max"])
@@ -1023,17 +1022,14 @@ def reset_perception_state() -> None:
 
 
 def extract_observation(left_img, right_img, timestamp=None, profile=None) -> PerceptionObs:
-    """提取左右摄像头的赛道观测。
+    """Extract a fused track observation from the stereo camera frames.
 
-    功能：输出中心点、边界点、道路宽度估计和感知置信度。
-    参数：`left_img` 与 `right_img` 是平台传入的 BGR 图像，`timestamp` 是仿真时间，
-        `profile` 是当前控制 profile（决定整条感知链是否启用对手检测/光流卡死，即
-        no_other_cars vs with_other_cars）。`profile=None` 时退回旧行为（按 OPPONENT_PROFILE
-        全局开关），供测试/replay 直接调用。
-    返回：`PerceptionObs`。
-    逻辑：分别扫描左右图像；单侧有效则使用单侧，双侧一致则合并，双侧冲突则选择高置信度结果。
-        active profile 贯穿到这里，让 no_other_cars 真正不跑对手检测、也不算 frame_motion，
-        多车感知能力不会泄漏到单车（见 CLAUDE.md「Profile 隔离」）。
+    ``profile`` controls whether opponent detection and frame-motion blockage
+    estimation execute. Passing ``None`` retains the legacy global switch used
+    by direct tests and offline replay. Each camera is scanned independently;
+    one valid side can stand alone, consistent sides are fused, and conflicting
+    sides are resolved in favour of the higher-confidence observation. The solo
+    profile bypasses every traffic-specific perception path.
     """
 
     if profile is None:
