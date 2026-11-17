@@ -58,6 +58,18 @@ The build commands regenerate the tracked submission files. The checks cover con
 
 The curated [`experiments/runs.csv`](experiments/runs.csv) registry and [experiment report](experiments/report.md) retain Webots and platform results, failure mechanisms, and design conclusions. Results are tied to a controller revision, profile, world, and run configuration rather than presented as timeless performance claims.
 
+| Evidence | Configuration | Result |
+| --- | --- | --- |
+| [R071 compatibility run](experiments/r071_webots_r2025a.json) | `with_other_cars`, official SDK revision `cfdeedb`, Webots R2025a, basic oval | 1 completed lap in `139.744 s`; rank 1; 0 major collisions |
+| [R065 traffic run](experiments/runs.csv) | `with_other_cars`, six vehicles, complex world | 1 completed lap in `256.864 s`; rank 2; 0 major collisions |
+| [R068 solo run](experiments/runs.csv) | `no_other_cars`, complex world | 1 completed lap in `252.928 s`; rank 1; 0 major collisions |
+
+R071 is a local SDK and simulator compatibility result, not an online competition score. R065 and R068 retain the world and platform context recorded during course development. The [experiment report](experiments/report.md) explains the validation layers and known limits behind these figures.
+
+![Multi-car pass reconstructed from Webots telemetry](experiments/figures/avoidance_webots/pass_topdown.png)
+
+The plot shows the traffic controller selecting the open side of a nearby vehicle and returning to its normal line. Camera detections, control state, and world telemetry were reviewed together rather than treating the trajectory alone as proof of perception quality.
+
 This was a **five-person team project**. My contribution centred on multi-car avoidance and recovery in the shared [perception](controller/perception.py) and [policy](controller/policy.py) pipeline: stabilizing ambiguous road segmentation with temporal state, resolving a controller-simulator command mismatch, integrating modules through shared contracts and single-file builds, and adding multi-car launch and blocked-road test procedures. The [contribution note](docs/r052_contribution_scope.md) records the reviewed scope and its relationship to later team development.
 
 ## Documentation

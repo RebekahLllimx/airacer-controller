@@ -8,6 +8,8 @@ The solo controller completed the official complex-world evaluation with a recor
 
 A later local compatibility run used SDK revision `cfdeedb`, Webots R2025a, and the generated `with_other_cars` submission on the basic oval. Supervisor metadata recorded one completed lap in `139.744 s`, rank 1, and zero major collisions. The run used official R2025a Webots assets and corrected local asset paths and checkpoint coordinates in an isolated SDK checkout; it is reproducible simulator evidence, not an online competition result.
 
+R072 repeated that setup with the `no_other_cars` profile. It completed the measured lap in `139.136 s`, only `0.608 s` (`0.44%`) faster than R071. This difference is not large enough to claim a performance improvement. It does show that traffic-specific perception and recovery were not the principal limit on this basic-world run; track length, the vehicle speed limit, and corner-speed planning dominate the observed time.
+
 ## Architecture
 
 The controller separates road perception, geometric estimation, driving policy, and output bounds. Scan-line corridor tracking and lane-marking detection produce a compact observation; a trusted geometric fit converts pixels into lateral, heading, look-ahead, curvature, and boundary state; the policy applies mode-dependent steering, speed, and recovery behavior.

@@ -12,6 +12,7 @@ PUBLIC_TARGETS = (
     ROOT / "README.md",
     ROOT / "TASK.md",
     ROOT / "controller",
+    ROOT / "baselines",
     ROOT / "docs",
     ROOT / "experiments",
     ROOT / "submissions",
@@ -51,7 +52,7 @@ def main() -> int:
             print(f"- {finding}")
         return 1
 
-    print(f"Public-release scan passed ({len(iter_text_files())} text files).")
+    print(f"Curated public-surface scan passed ({len(iter_text_files())} text files).")
     return 0
 
 

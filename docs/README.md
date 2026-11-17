@@ -8,7 +8,7 @@ These documents cover the controller architecture, local and official validation
 | [`official_testing.md`](official_testing.md) | Configure the official SDK, run its validator, and launch supported Webots worlds. |
 | [`human_webots_testing.md`](human_webots_testing.md) | Run solo or multi-car Webots tests and collect the expected output artifacts. |
 | [`multicar_extreme_tests.md`](multicar_extreme_tests.md) | Reproduce blocked-road, collision, and recovery scenarios for the traffic profile. |
-| [`r052_contribution_scope.md`](r052_contribution_scope.md) | Record the reviewed contribution scope within the five-person team project. |
+| [`r052_contribution_scope.md`](r052_contribution_scope.md) | Explain the five-person team context and the primary multi-car contribution. |
 
 ## Suggested reading paths
 

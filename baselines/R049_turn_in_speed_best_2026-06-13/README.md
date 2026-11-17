@@ -11,4 +11,4 @@
 3. A latch holds steering authority through the corner and decays after exit.
 4. The speed profile raises medium-corner speed without removing sharp-corner limits.
 
-The snapshot is retained as the principal solo-driving rollback point. Traffic avoidance is intentionally outside its scope.
+The milestone is retained as the principal solo-driving rollback point. Traffic avoidance is intentionally outside its scope. Its generated controller is recoverable from Git history and is not duplicated beside the maintained source.

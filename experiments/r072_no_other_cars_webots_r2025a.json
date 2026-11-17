@@ -1,0 +1,43 @@
+{
+  "run_id": "R072",
+  "date": "2026-11-17",
+  "controller_profile": "no_other_cars",
+  "controller_revision": "same driving core as R071; traffic-specific processing disabled",
+  "sdk": {
+    "repository": "https://github.com/pkulab409/pkudsa.airacer.git",
+    "revision": "cfdeedb",
+    "checkout": "isolated worktree"
+  },
+  "simulator": {
+    "name": "Webots",
+    "version": "R2025a",
+    "world": "track_basic.wbt",
+    "mode": "fast batch, no rendering"
+  },
+  "compatibility_changes": [
+    "Resolved SDK asset references to an exact local checkout of official Cyberbotics R2025a assets.",
+    "Aligned the local supervisor checkpoint and finish-line coordinates with the included basic oval world."
+  ],
+  "result": {
+    "laps": 1,
+    "best_lap_seconds": 139.136,
+    "total_time_seconds": 278.121,
+    "rank": 1,
+    "major_collisions": 0,
+    "status": "normal",
+    "finish_reason": "grace_period_expired"
+  },
+  "comparison_to_r071": {
+    "lap_time_delta_seconds": -0.608,
+    "lap_time_delta_percent": -0.435,
+    "interpretation": "The difference is too small to establish a performance gain. Traffic-specific processing was not the primary limit on this basic-world run."
+  },
+  "evidence": {
+    "lap_start_sim_time": 140.992,
+    "finish_event_sim_time": 280.128,
+    "race_end_sim_time": 340.128,
+    "metadata_written": true,
+    "telemetry_written": true
+  },
+  "scope": "Local controlled comparison against R071; not an online competition result."
+}
