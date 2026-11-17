@@ -1,13 +1,8 @@
-"""策略参数配置。
-
-功能概述：集中保存采样色卡、视觉、估计和控制策略参数。
-输入输出：输入任意 profile 名称，输出同一套控制参数。
-处理流程：先定义从 Webots 原图采样得到的颜色配置，再定义感知、估计和控制参数。
-"""
+"""Calibrated colour, perception, estimation, and control parameters."""
 
 COLOR_PROFILE = {
-    # 采样来源：.tmp/color_sample/color_samples.json，来自 complex/basic 原始相机帧。
-    # 数组均为 OpenCV 口径：BGR / HSV / Lab；RGB 只用于人工核对。
+    # Calibrated from original complex- and basic-track camera frames.
+    # BGR, HSV, and Lab values follow OpenCV conventions; RGB is for inspection.
     "road_asphalt_dark_gray": {
         "rgb_median": (66.5, 77.0, 85.5),
         "bgr_median": (85.5, 77.0, 66.5),
@@ -60,8 +55,7 @@ COLOR_PROFILE = {
         "hsv_tolerance": (14.0, 45.0, 35.0),
         "lab_tolerance": (28.0, 12.0, 25.0),
     },
-    # 官方 6 车 PROTO 基础色（sdk/webots/protos/Car*.proto）。
-    # 每项是 (BGR, HSV, HSV tolerance)，顺序：Phoenix红、Thunder蓝、Viper绿、Nova黄、Frost白、Shadow黑。
+    # Six official car colours as (BGR, HSV, HSV tolerance).
     "car_body_colors": (
         ((60, 20, 220), (174, 232, 220), (10, 65, 80)),
         ((255, 144, 30), (105, 225, 255), (10, 60, 70)),
@@ -127,8 +121,7 @@ OPPONENT_PROFILE = {
     "near_obstacle_white_sat_max": 80.0,
     "near_obstacle_black_gray_max": 30.0,
     "near_obstacle_black_value_max": 45.0,
-    # 略降检测阈值让对手车更早进入视野就触发避让（晚触发=已被夹）。
-    # near_obstacle 只驱动有界的避让偏置+减速，偶发误触发也基本无害。
+    # Detect opponents early enough for a bounded steering and speed response.
     "near_obstacle_min_area": 500.0,
     "near_obstacle_min_width": 24.0,
     "near_obstacle_min_height": 14.0,
@@ -137,28 +130,23 @@ OPPONENT_PROFILE = {
 LINE_FOLLOW_PROFILE = {
     "enable": True,
     "white_min": 145.0,
-    # Phase 2-A（2026-06-12，实测取证）：弯道里中心虚线是稀疏短段，旧的 5 条固定扫描行大多落在
-    # 虚线"间隙"里 → 检不到线 → 车回退到道路 mask 的提前打轮 → 切内线卡路牙。实测真帧显示：
-    # 扫描行加密到 12 条、ROI 上下放宽后，弯道入口（t≈29-31）的中心线能被双目稳定召回。
+    # Dense scan rows improve recall of short dashed markings in corners.
     "scan_top_ratio": 0.44,
     "scan_bottom_ratio": 0.92,
     "scan_count": 12,
-    "confidence_full_points": 5.0,  # 置信度 = 命中点数 / 该值（与扫描行数解耦，加密行不稀释置信度）
+    "confidence_full_points": 5.0,
     "row_band": 2,
     "min_segment_width": 3.0,
     "max_segment_width": 70.0,
-    # Phase 1（2026-06-12，用户取证）：complex 弯道内侧护栏支柱和中心虚线一样亮，旧的纯亮度白
-    # 阈值（np.all(band>=white_min)）无法区分，导致护栏支柱被当成大 offset 的"线"。真正的中心虚线
-    # 有两个判别特征：① 近中性白（通道色度低，护栏偏蓝灰色度更高）；② 左右紧邻都是深灰沥青
-    # （"白线在大片路面中间"，护栏支柱外侧是路牙/红地/草而非路面）。两条同时满足才算白线候选。
-    "white_chroma_max": 40.0,       # 白线像素允许的最大通道色度（max-min）；护栏蓝灰色度更高被排除
-    "context_window": 18,           # 线段两侧各取多宽的窗口检查是否为路面（像素）
-    "context_gap": 4,               # 紧邻线段边缘跳过的像素，抗抗锯齿/白色高光外溢
-    "context_min_ratio": 0.5,       # 侧窗内属于深灰路面的列占比下限，两侧都要达标
-    "road_dark_min": 28.0,          # 路面上下文：最暗通道下限（排除纯黑阴影）
-    "road_dark_max": 110.0,         # 路面上下文：最亮通道上限（排除亮路牙≈112/护栏/红地）
-    "road_dark_chroma_max": 36.0,   # 路面上下文：最大色度（排除红地≈94、草≈84）
-    "offset_near_fraction": 0.34,   # 用最近/最远各 1/3 实测点的中位数算 offset/heading，不再直线外推
+    # True lane markings are near-neutral white and bordered by dark asphalt.
+    "white_chroma_max": 40.0,
+    "context_window": 18,
+    "context_gap": 4,
+    "context_min_ratio": 0.5,
+    "road_dark_min": 28.0,
+    "road_dark_max": 110.0,
+    "road_dark_chroma_max": 36.0,
+    "offset_near_fraction": 0.34,
     "initial_center_max_offset": 0.40,
     "max_center_jump_ratio": 0.32,
     "min_points_per_camera": 3,
@@ -169,48 +157,30 @@ LINE_FOLLOW_PROFILE = {
     "offset_gain": 0.76,
     "heading_gain": 0.18,
     "max_correction": 0.34,
-    # 信任门控（2026-06-11 实跑取证）：白线检测会把白色护栏（complex 直道 lo≈0.4-0.93）、
-    # 白车/斑马线（basic 终点 lo≈+0.35）、弯中错误线段（lo≈-0.64）当成车道线，单帧 ±0.34
-    # 修正造成无意义打轮甚至抵消正常入弯舵角。骑线时 |offset| 本应很小，故：
-    # 超出 trust_max 拒绝、帧间突变拒绝、连续 confirm_frames 帧有效才生效、EMA 平滑、
-    # 弯中（curve_risk 接近 curve_gate）按比例压低——弯中线段不连续且直线拟合失真。
-    # Phase 2-C（2026-06-12，实测取证）：车在弯道入口已偏到中心线左侧，白线 offset 实测涨到
-    # +0.32→+0.50。旧的 0.30 门把这些真实"偏离中心线"的检测全拒掉，车反而无法靠白线回中。
-    # 现在 Phase 1 的"两侧紧邻路面"上下文已从结构上排除护栏支柱，offset 门可以放宽用于回中。
-    # R027 显示第一个左弯真实白线会到 0.62-0.71；0.75 以上仍拒（多半是路沿/远处错线）。
-    # **这是走线改动，必须人上车终判。**
+    # Trust requires plausible offset, temporal continuity, and repeated detection.
     "offset_trust_max": 0.75,
     "offset_jump_max": 0.12,
     "confirm_frames": 3,
     "smoothing": 0.5,
     "curve_gate": 0.35,
-    # R027 取证：弯中 offset 已说明车偏离白线，但 curve_gate 会把后置白线修正压成 0。
-    # 当 offset 足够大时，保留一部分纯 offset 回中力；heading 仍可被弯中门控压低。
+    # Preserve a minimum offset correction when heading is unreliable in a corner.
     "offset_priority_min": 0.18,
     "offset_curve_min_scale": 0.35,
-    # R039（2026-06-12，R038 残留弯中切内线取证）：弯中（curve_risk≈0.67 ≫ curve_gate 0.35）
-    # curve_scale 把混合回中修正压到 0，只剩很弱的 offset 楼层（≈0.10-0.19），不足以抵消
-    # road-mask 的弯道向内预判 → 半径偏小、车落到白线内侧贴/撞内栏。当可信白线连续多帧显示
-    # 车确在内侧（|offset| 大、offset 与 heading 反号）时，叠加一个有界“向外辅助”，方向恒为把车
-    # 推回白线一侧；并在白线短暂丢置信（虚线间隙）时按固定帧数保持上一段向外修正。全程仍受
-    # max_correction 上限约束，不会越过既有舵角包络。**这是走线改动，必须人上车终判。**
+    # A bounded outward assist survives brief dashed-line gaps in tight corners.
     "inside_assist_enable": True,
-    "inside_assist_offset_min": 0.30,   # 车被判定“已在内侧”的 |offset| 下限
-    "inside_assist_streak_min": 4,      # 连续多少帧可信内侧才允许辅助（抗单帧误检）
-    "inside_assist_gain": 0.55,         # 超出阈值部分换算成向外偏置的增益
-    "inside_assist_max": 0.20,          # 向外辅助偏置上限（叠加后仍受 max_correction 钳制）
-    "hold_offset_min": 0.30,            # 触发“丢置信保持”所需的上一段可信 |offset|
-    "hold_frames": 8,                   # 丢置信后保持向外修正的最大帧数
-    "hold_decay": 0.90,                 # 保持期内每帧衰减系数
-    # R028 残留瞬态：第一个左弯中段常只有一侧相机能凑够弯中虚线点，双目硬要求会让
-    # `line_conf` 短暂归零。只在 complex 红色环境里接受单目兜底，并打置信折扣；basic 不受影响。
+    "inside_assist_offset_min": 0.30,
+    "inside_assist_streak_min": 4,
+    "inside_assist_gain": 0.55,
+    "inside_assist_max": 0.20,
+    "hold_offset_min": 0.30,
+    "hold_frames": 8,
+    "hold_decay": 0.90,
+    # Restricted monocular fallback for line gaps in the red complex environment.
     "single_camera_enable": True,
     "single_camera_min_confidence": 0.60,
     "single_camera_confidence_scale": 0.65,
     "single_camera_offset_max": 0.75,
-    # complex 发车时车初始在白线左侧，road mask 会把右侧大块低饱和地面误当路，导致几何中心贴左。
-    # 只在开头短窗口接受“白线在右侧且斜率合理”的较大 offset，用于把车捕获回白线中间；
-    # 负 offset 和接近护栏的大 offset 仍拒绝。
+    # Startup-only acquisition accepts a plausible right-side marking.
     "startup_acquire_until": 14.0,
     "startup_offset_min": 0.32,
     "startup_offset_trust_max": 0.65,
@@ -256,22 +226,19 @@ ESTIMATOR_PROFILE = {
     "lost_heading_decay": 0.78,
     "lost_curvature_decay": 0.76,
     "lost_lookahead_decay": 0.82,
-    # 白线进入主链路时仍受信任门控：普通帧只接收小 offset 的双目线；complex 发车短窗口
-    # 额外接收右侧中等 offset 的单目线。road mask 置信差或饱和时，提高白线权重。
+    # Lane evidence enters geometry only through the same trust gates used by policy.
     "line_target_min_confidence": 0.30,
     "line_lateral_weight": 0.85,
     "line_heading_weight": 0.55,
     "line_lookahead_weight": 0.70,
     "line_lookahead_projection": 0.55,
-    "line_target_normal_offset_max": 0.75,  # Phase 2-C/R027：与 LINE_FOLLOW offset_trust_max 同步放宽（见该处注释）
+    "line_target_normal_offset_max": 0.75,
     "line_target_normal_scale": 0.55,
     "line_target_unreliable_road_scale": 1.00,
     "line_target_startup_scale": 0.76,
     "line_target_road_confidence_max": 0.60,
     "line_target_confidence_scale": 0.75,
-    # R027 取证：第一个左弯里白线 offset 为正（线在右，车应右回中），但 line_heading 很负。
-    # 若直接融合 heading/lookahead，会继续给大左舵。offset 足够大且与 heading 反号时，白线
-    # 主要代表"回中方向"，heading 只能弱参考，lookahead 不允许被反向拉过中心。
+    # When offset and line heading conflict, prioritize centering over projected slope.
     "line_offset_priority_min": 0.18,
     "line_conflict_heading_scale": 0.20,
     "line_conflict_projected_scale": 0.65,
@@ -302,8 +269,7 @@ WITH_OTHER_CARS_CONTROL = {
     "lost_confidence": 0.10,
     "recovery_confidence": 0.28,
     "lost_speed": 0.28,
-    # 速度提升 Phase 2（激进）：少把中等弯当 hard_turn（threshold 0.20→0.30），且 hard_turn/恢复/
-    # 回中各状态的速度上限大幅抬高——半径已稳，弯里可以更快。
+    # Medium bends remain outside hard-turn mode after the corner-radius fix.
     "recovery_speed": 0.55,
     "hard_turn_speed": 0.72,
     "hard_turn_center_speed_bonus": 0.28,
@@ -331,42 +297,24 @@ WITH_OTHER_CARS_CONTROL = {
     "gain_curve": 0.12,
     "gain_lateral_nonlinear": 0.22,
     "gain_curve_nonlinear": 0.02,
-    # 入弯时机门控（R042/R043/R044，接触日志+控制日志定位"入弯太早"是切内线/撞内栏根因）：
-    # arrival 只看"车已物理到弯"= 近处 |lateral| 漂移（直道≈0，开到弯口才长起来）。R043 删除
-    # floor、且 R044 移除 heading 项后，arrival 纯由 lateral 决定，policy 直接用它缩放远处预瞄项；
-    # 车未到弯口时预瞄项可被压到 0。R046 删除了 R044 的"弯有多急(curve_risk)"调制——它在入弯初期
-    # curve_risk 还低时把所有弯误判成缓弯、过度迟滞，等 curve_risk 涨上来车已深入弯里才急打轮（半径
-    # 反而大、冲外侧、掉速）。入弯瞬间没有信号能区分缓/急弯，故这种调制原理上修不好，已删。
-    # 现在 arrival 纯由近处 |lateral| 漂移决定：`corner_arrival = clamp(|lateral|/turn_in_lateral_ref, 0, 1)`。
-    "turn_in_lateral_ref": 0.75,     # arrival 参考基准（调小=更早转/半径更小，调大=更晚转/半径更大）
-    # R047：过弯越快半径越大——把入弯参考随速度收小，speed_norm 时参考 = lateral_ref×(1−此值×speed_norm)，
-    # 高速早开门、早转，弥补高速入口多走的距离。0=不耦合（纯 lateral）。
+    # Corner arrival is based on near-field lateral displacement, not distant heading.
+    "turn_in_lateral_ref": 0.75,
+    # Open the arrival gate earlier at speed to compensate for greater travel per frame.
     "turn_in_speed_comp": 0.6,
-    # R048：入弯门控是 lookahead_term 上的连续乘子，但 lateral 在弯中会反复回落→门收掉远处项→车转
-    # 一半收轮、转不到位、出弯提前收。用 latch 保持 arrival 峰值并按此衰减：弯中 lateral 短暂回落
-    # 不收门（持续转）、出弯迟滞收轮。越大保持越久（出弯 lag 越长，过头会出弯过转），0=不保持。
+    # Hold the gate through a corner, then decay it after exit.
     "turn_in_hold_decay": 0.92,
-    # R040/R041（2026-06-12，接触日志定位 t≈228.6 撞内栏）：弯中可信白线显示车已切内侧时，按
-    # (|line_offset|−offset_min)·gain×置信度 成比例削弱远处预瞄项（lookahead+heading），上限
-    # corner_relief_max。直接在源头放大半径并消除"road-mask 拉内 vs 白线拉外"的来回甩。
-    # 只缩远处转向项，不进 risk/mode/速度/入弯门控。
-    # R041 关键：relief 加"保持/迟滞"。接触日志显示撞栏发生在 line_offset 来回穿过 0 的极限环里——
-    # offset 一翻负 relief 就瞬间归零、road-mask 立刻猛拉回 -0.76、过冲撞内栏。所以 relief 触发后
-    # 按 hold_decay 衰减保持，trough 里也压住远处项，打破极限环。同时调激进（gain/max 调大、门降到
-    # 0.45）——之前保守微调没用。**走线改动，需人上车终判。**
+    # Trusted inside-line evidence attenuates inward lookahead with hysteresis.
     "corner_relief_enable": True,
     "corner_relief_conf_min": 0.45,
     "corner_relief_offset_min": 0.25,
     "corner_relief_gain": 2.0,
     "corner_relief_max": 0.85,
-    "corner_relief_hold_decay": 0.85,   # relief 触发后每帧保持衰减系数（迟滞，破极限环）
+    "corner_relief_hold_decay": 0.85,
     "steering_deadzone": 0.015,
     "max_abs_steering": 0.76,
     "hard_turn_steering_scale": 0.78,
-    "steering_speed_cap_scale": 0.20,   # R047：高速收舵放松——速度上调后它在弯里把舵卡死、导致打不动/冲外
-    # 边界余量保护默认关闭（outward_gain/slowdown=0、cap=1.0 即 no-op）：余量来自
-    # road-mask 边界点，mask 饱和或 fallback 时是噪声，R014 实车证明它既没拦住撞栏
-    # 又会产生无意义打轮/减速。margin 字段保留为诊断输出。
+    "steering_speed_cap_scale": 0.20,
+    # Margin protection is disabled because fallback boundaries are too noisy.
     "inside_margin_warning": 0.34,
     "inside_margin_outward_gain": 0.0,
     "inside_margin_steering_cap": 1.0,
@@ -375,13 +323,10 @@ WITH_OTHER_CARS_CONTROL = {
     "inside_left_heading_max": -0.24,
     "inside_left_curvature_max": -0.45,
     "inside_left_steering_limit": -0.40,
-    # 速度提升 Phase 3（激进）：弯道/横偏/转向降速因子整体减弱——半径已稳，不需要刹这么狠。
     "curve_slowdown": 0.42,
-    "curve_power": 1.5,    # 提高指数：中等弯(curve_risk 0.4-0.6)提速，急弯(=1.0)降速不变(物理上限)
+    "curve_power": 1.5,
     "offset_slowdown": 0.28,
     "offset_power": 1.25,
-    # 速度提升 Phase 1（最安全、收益最大）：解耦感知置信对速度的惩罚。track_conf 中位仅 0.60，
-    # 几何没问题也被压速；min_confidence_factor 0.58→0.90 → 中等置信几乎不再压速。
     "min_confidence_factor": 0.95,
     "steering_slowdown": 0.12,
     "steering_power": 1.15,
@@ -390,7 +335,7 @@ WITH_OTHER_CARS_CONTROL = {
     "steering_smoothing_correction": 0.14,
     "steering_smoothing_recovery": 0.28,
     "max_steering_delta": 0.46,
-    # 速度提升 Phase 4（激进）：出弯后更快回速，缩短低速段。
+    # Recover speed quickly after a corner while retaining fast braking.
     "max_speed_increase_per_sec": 5.0,
     "max_speed_decrease_per_sec": 4.80,
     "escape_min_confidence": 0.25,
@@ -405,11 +350,10 @@ WITH_OTHER_CARS_CONTROL = {
     "escape_low_speed_threshold": 0.28,
     "escape_low_speed_trigger_frames": 45,
     "escape_signature_delta": 0.35,
-    # 脱困摆动幅度：脱困期间每10帧翻转方向，叠加在基准舵角上的额外幅度
+    # Recovery alternates a bounded steering offset every ten frames.
     "escape_wiggle_amplitude": 0.30,
-    # 几何（急弯卡边）脱困必须同时满足低指令速度：平稳巡弯也会出现"高弯量+签名稳定"
-    # （complex R 实跑 t≈37.2 在正常左弯中误触发 escape，直接导致撞左栏），真卡边时
-    # 指令速度必然已被弯道/转向因子压低。
+    # Geometry-based escape also requires low commanded speed to avoid false
+    # activation during stable cornering.
     "escape_turn_speed_max": 0.36,
     "escape_trigger_frames": 18,
     "escape_turn_frames": 24,
@@ -428,8 +372,7 @@ WITH_OTHER_CARS_CONTROL = {
     "escape_pinned_frames": 40,
     "escape_pinned_steering": 0.92,
     "escape_pinned_speed": 0.35,
-    # complex 后段静态车 + 单侧边界贴住时，画面冻结但指令速度可能仍高于 low_speed 阈值；
-    # 这条只在红色环境、近障碍、单侧余量为 0 附近时启用，避免普通巡弯误触发。
+    # Boundary-obstacle recovery covers a blocked view above the low-speed gate.
     "escape_boundary_margin_risk": 0.90,
     "escape_boundary_margin_max": 0.08,
     "escape_boundary_speed_max": 0.46,
@@ -438,51 +381,38 @@ WITH_OTHER_CARS_CONTROL = {
     "escape_boundary_frames": 90,
     "escape_boundary_steering": 0.92,
     "escape_boundary_speed": 0.45,
-    # ── 倒车脱困（仅卡死类脱困先倒车拉开距离，再前冲）──
-    # nominal_dt≈0.032s/帧：30 帧≈1s。倒车帧数会被自动限制为不超过该脱困总帧数的一半。
-    # 倒车阶段输出负速度（本地 Driver API 直接倒车；线上 clamp 到 0，靠后段前冲兜底）。
+    # Reverse only during blockage recovery, then drive forward toward open road.
     "escape_reverse_speed": 0.42,
     "escape_pinned_reverse_frames": 16,
     "escape_low_speed_reverse_frames": 30,
     "escape_boundary_reverse_frames": 26,
-    # ── 多车安全 ──
-    # 总开关：是否启用整条多车能力（perception 的对手检测/光流卡死 + policy 的避让/减速/
-    # 倒车/force_escape）。no_other_cars 置 False，让单车彻底不跑多车代码路径。
+    # Multi-car feature gate: opponent perception, avoidance, and forced recovery.
     "enable_opponent": True,
     "opponent_speed_factor": 0.72,
-    # 偏侧对手车不该触发与正前方挡车同等幅度的让速；否则一被超就长期缩在后面。
+    # Side opponents cause less braking than a centered blockage.
     "opponent_side_speed_factor": 0.92,
     "opponent_center_x": 0.28,
-    # 弯道中近处有对手车时额外减速（防止多车弯道碰撞卡死）
+    # Additional corner slowdown for a nearby centered opponent.
     "opponent_corner_speed_factor": 0.55,
     "opponent_corner_curve_threshold": 0.25,
-    # 对手车主动避让转向：优先用对手车左右位置决定绕行方向，再用边界余量约束。
-    # 实跑（CP3 进堆）发现 ±0.18 太弱，被角区循线抵消、压不出果断变道 → 调强。
-    # 仍以 near_obstacle 检测为门控（只有真检测到对手才生效），且偏置天然朝开阔侧，安全。
+    # Opponent position chooses direction; boundary margin bounds the avoidance bias.
     "opponent_avoid_steering_enable": True,
     "opponent_avoid_steering_gain": 0.65,
     "opponent_avoid_steering_max": 0.42,
     "opponent_direction_deadzone": 0.16,
     "opponent_direction_steering_gain": 0.20,
-    # ── 丢线强制脱困（多车/卡死安全网）──
-    # 持续丢线后朝路面方向打硬舵+低速前进，作为所有几何脱困的兜底。
-    # 不依赖特定速度/偏移/余量条件，只靠丢线持续时间触发。
+    # Forced recovery is the final fallback after prolonged line loss.
     "force_reverse_lost_streak": 45,
     "force_reverse_lost_frames": 150,
     "force_reverse_lost_speed": 0.45,
     "force_reverse_lost_steering": 0.95,
-    # 物理卡死检测：指令速度≤此值持续过多帧即触发 force_escape（不依赖丢线）
+    # Sustained near-zero command can trigger recovery without line loss.
     "force_reverse_zero_speed_threshold": 0.08,
     "force_reverse_zero_speed_frames": 60,
-    # force_escape 领头倒车：倒够距离脱开卡点（栏杆/车）并改变视野，再前冲朝开阔侧。
-    # R059 绿车贴边卡死说明 40 帧偏短；55 帧≈1.8s，仍保留足够前冲阶段。
+    # Reverse long enough to change the view, then retain a forward phase.
     "force_reverse_back_speed": 0.50,
     "force_reverse_back_frames": 55,
-    # 光流卡死检测（撞栏顶住空转、控制器自以为在巡航）：
-    # frame_motion(64×48 灰度帧间 MAD) < 阈值 且 命令速度 ≥ min 持续 N 帧即触发 force_escape。
-    # 实测标定：全速行驶 frame_motion≥0.47（中位 0.81），被顶住不动≈0.07。
-    # R059 贴边时可能有画面抖动，阈值放宽到 0.28；cmd≥0.40 + 连续 30 帧(~1s)。
-    # 0.32 在三车复测中误触发，0.28 则没有正常行驶连续 30 帧满足触发条件。
+    # Low frame motion under a forward command is a wheel-speed-free blockage proxy.
     "motion_still_threshold": 0.28,
     "motion_still_frames": 30,
     "motion_still_min_cmd_speed": 0.40,
@@ -494,74 +424,68 @@ STRATEGY_NO_OTHER_CARS = "no_other_cars"
 STRATEGY_WITH_OTHER_CARS = "with_other_cars"
 
 # The solo profile derives from the shared driving parameters, then restores the
-# conservative R049 escape values and disables every traffic-only feature. This
+# conservative validated escape values and disables every traffic-only feature. This
 # keeps common vehicle physics aligned without leaking opponent or reverse
 # recovery behavior into time-trial driving.
 NO_OTHER_CARS_CONTROL = dict(WITH_OTHER_CARS_CONTROL)
-NO_OTHER_CARS_CONTROL.update({
-    # (a) R049 原始（更保守）的 escape 值
-    "escape_min_confidence": 0.48,
-    "escape_signature_delta": 0.13,
-    "escape_pinned_lateral_min": 0.45,
-    "escape_pinned_steering_min": 0.55,
-    "escape_pinned_speed_max": 0.55,
-    "escape_pinned_trigger_frames": 20,
-    "escape_pinned_frames": 28,
-    "escape_pinned_steering": 0.80,
-    "escape_pinned_speed": 0.62,
-    "escape_low_speed_threshold": 0.22,
-    "escape_low_speed_trigger_frames": 120,
-    "escape_low_speed_frames": 120,
-    "escape_low_speed_steering": 0.74,
-    "escape_low_speed_speed": 0.90,
-    "escape_boundary_trigger_frames": 8,
-    "escape_boundary_frames": 72,
-    "escape_boundary_steering": 0.86,
-    "escape_boundary_speed": 0.86,
-    # (b) 多车增量全部关闭（R049 没有这些）
-    "enable_opponent": False,         # 总开关：perception 不跑对手检测/光流卡死，policy 不跑多车分支
-    "opponent_speed_factor": 1.0,
-    "opponent_side_speed_factor": 1.0,
-    "opponent_center_x": 0.28,
-    "opponent_corner_speed_factor": 1.0,
-    "opponent_corner_curve_threshold": 0.25,
-    "opponent_avoid_steering_enable": False,
-    "opponent_avoid_steering_gain": 0.0,
-    "opponent_avoid_steering_max": 0.0,
-    "opponent_direction_deadzone": 1.0,
-    "opponent_direction_steering_gain": 0.0,
-    "escape_wiggle_amplitude": 0.0,          # R049 脱困不摆动
-    "escape_reverse_speed": 0.0,             # 无倒车相位
-    "escape_pinned_reverse_frames": 0,
-    "escape_low_speed_reverse_frames": 0,
-    "escape_boundary_reverse_frames": 0,
-    "force_reverse_lost_streak": 10**9,      # force_escape 永不触发
-    "force_reverse_zero_speed_frames": 10**9,
-    "force_reverse_zero_speed_threshold": 0.0,
-    "force_reverse_lost_frames": 0,
-    "force_reverse_lost_speed": 0.0,
-    "force_reverse_lost_steering": 0.0,
-    "force_reverse_back_frames": 0,
-    "force_reverse_back_speed": 0.0,
-    "motion_still_threshold": 0.0,           # 光流卡死检测关闭（frame_motion<0 永假）
-    "motion_still_frames": 10**9,
-    "motion_still_min_cmd_speed": 1.0,
-})
+NO_OTHER_CARS_CONTROL.update(
+    {
+        # Conservative solo recovery values.
+        "escape_min_confidence": 0.48,
+        "escape_signature_delta": 0.13,
+        "escape_pinned_lateral_min": 0.45,
+        "escape_pinned_steering_min": 0.55,
+        "escape_pinned_speed_max": 0.55,
+        "escape_pinned_trigger_frames": 20,
+        "escape_pinned_frames": 28,
+        "escape_pinned_steering": 0.80,
+        "escape_pinned_speed": 0.62,
+        "escape_low_speed_threshold": 0.22,
+        "escape_low_speed_trigger_frames": 120,
+        "escape_low_speed_frames": 120,
+        "escape_low_speed_steering": 0.74,
+        "escape_low_speed_speed": 0.90,
+        "escape_boundary_trigger_frames": 8,
+        "escape_boundary_frames": 72,
+        "escape_boundary_steering": 0.86,
+        "escape_boundary_speed": 0.86,
+        # Disable every traffic-only path in the solo profile.
+        "enable_opponent": False,
+        "opponent_speed_factor": 1.0,
+        "opponent_side_speed_factor": 1.0,
+        "opponent_center_x": 0.28,
+        "opponent_corner_speed_factor": 1.0,
+        "opponent_corner_curve_threshold": 0.25,
+        "opponent_avoid_steering_enable": False,
+        "opponent_avoid_steering_gain": 0.0,
+        "opponent_avoid_steering_max": 0.0,
+        "opponent_direction_deadzone": 1.0,
+        "opponent_direction_steering_gain": 0.0,
+        "escape_wiggle_amplitude": 0.0,
+        "escape_reverse_speed": 0.0,
+        "escape_pinned_reverse_frames": 0,
+        "escape_low_speed_reverse_frames": 0,
+        "escape_boundary_reverse_frames": 0,
+        "force_reverse_lost_streak": 10**9,
+        "force_reverse_zero_speed_frames": 10**9,
+        "force_reverse_zero_speed_threshold": 0.0,
+        "force_reverse_lost_frames": 0,
+        "force_reverse_lost_speed": 0.0,
+        "force_reverse_lost_steering": 0.0,
+        "force_reverse_back_frames": 0,
+        "force_reverse_back_speed": 0.0,
+        "motion_still_threshold": 0.0,
+        "motion_still_frames": 10**9,
+        "motion_still_min_cmd_speed": 1.0,
+    }
+)
 
-# 兼容旧测试和局部脚本里直接导入 CONTROL 的用法：默认指向单车 profile（与 origin/main 一致）。
-# 多车行为请显式用 get_profile("with_other_cars") 或 WITH_OTHER_CARS_CONTROL。
+# Compatibility alias for tests and tools that expect a default solo profile.
 CONTROL = NO_OTHER_CARS_CONTROL
 
 
 def get_profile(name: str) -> dict:
-    """按策略名读取控制 profile。
-
-    功能：给顶层控制器返回对应场景的控制参数浅拷贝。
-    参数：`name` 是策略名——`no_other_cars`（单车，R049驾驶底座）或 `with_other_cars`（多车）。
-    返回：对应 CONTROL 字典的浅拷贝。
-    逻辑：两个 profile 共享核心驾驶参数，only 多车增量（避让/倒车/force_escape/光流卡死）和
-        escape 激进度不同。未知名按单车处理（最保守、永不输出倒车）。
-    """
+    """Return a shallow copy of the requested profile, defaulting to solo."""
 
     if name == STRATEGY_WITH_OTHER_CARS:
         return dict(WITH_OTHER_CARS_CONTROL)
