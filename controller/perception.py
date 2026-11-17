@@ -31,7 +31,7 @@ _STATE = PerceptionState()
 
 
 def _save_frame_centers(centers: list[tuple[float, float]]) -> None:
-    """保存本帧扫描中心，供下一帧跨帧锚定使用。"""
+    """Store current scan centers as temporal anchors for the next frame."""
     if not centers:
         _STATE.last_frame_centers = None
     else:
@@ -39,7 +39,7 @@ def _save_frame_centers(centers: list[tuple[float, float]]) -> None:
 
 
 def _maybe_reset_perception_by_timestamp(timestamp: float | None) -> None:
-    """时间戳回退或跳跃过大时清空跨帧记忆。"""
+    """Clear temporal anchors after timestamp rollback or a long gap."""
     if timestamp is None:
         _STATE.last_frame_centers = None
         _STATE.last_frame_timestamp = None
@@ -53,13 +53,7 @@ def _maybe_reset_perception_by_timestamp(timestamp: float | None) -> None:
 
 @dataclass
 class _CameraScan:
-    """单侧摄像头扫描结果。
-
-    功能：保存单张图像的中心点、边界点、道路宽度、置信度和调试标记。
-    参数：字段由 `_scan_image()` 生成。
-    返回：内部 dataclass。
-    逻辑：融合阶段只读取这些稳定字段，不依赖扫描过程的中间变量。
-    """
+    """Stable road, boundary, obstacle, and confidence output from one camera."""
 
     center_points: np.ndarray
     left_edge_points: np.ndarray
@@ -99,7 +93,7 @@ def _empty_obs(debug_flags: int = 1) -> PerceptionObs:
 
 
 def _valid_image(image) -> bool:
-    """检查输入是否是三通道 BGR 图像。"""
+    """Return whether input is a three-channel BGR image."""
 
     return (
         image is not None
@@ -110,14 +104,7 @@ def _valid_image(image) -> bool:
 
 
 def _is_synthetic_grayscale_frame(image: np.ndarray) -> bool:
-    """识别无色差占位帧。
-
-    功能：用少量采样点判断整帧是否近似纯灰度，避免在无真实视觉信息的输入上跑完整分割。
-    参数：`image` 是 BGR 图像。
-    返回：采样点三通道差值几乎为 0 时返回 True。
-    逻辑：真实 Webots 帧通常含天空、草地、红地、车身或带色差沥青；纯灰度帧多来自 mock、
-        传感器占位或合成测试输入。多车 profile 即使走快速路径，也仍会保留近车检测。
-    """
+    """Detect low-chroma mock frames that contain no useful road colour."""
 
     sample = image[::32, ::32, :]
     if sample.size == 0:
@@ -127,7 +114,7 @@ def _is_synthetic_grayscale_frame(image: np.ndarray) -> bool:
 
 
 def _is_red_environment(image: np.ndarray) -> bool:
-    """判断当前摄像头是否处在 complex 的红色场地环境。"""
+    """Detect the red-ground complex-track environment."""
 
     height = image.shape[0]
     roi = image[int(height * 0.30) : int(height * 0.88), :]
@@ -143,7 +130,7 @@ def _is_red_environment(image: np.ndarray) -> bool:
 
 
 def _hue_delta(hue: np.ndarray, center: float) -> np.ndarray:
-    """计算 OpenCV HSV hue 的环形距离。"""
+    """Return circular distance in OpenCV's hue range."""
 
     delta = np.abs(hue.astype(np.float32) - float(center))
     return np.minimum(delta, 180.0 - delta)
@@ -152,13 +139,7 @@ def _hue_delta(hue: np.ndarray, center: float) -> np.ndarray:
 def _sampled_color_mask(
     hsv: np.ndarray, lab: np.ndarray, color_name: str
 ) -> np.ndarray:
-    """按采样色卡生成颜色 mask。
-
-    功能：把 Webots 原始帧采样得到的 HSV/Lab 中位数和容差转换成布尔 mask。
-    参数：`hsv`、`lab` 是同一 ROI 的 OpenCV 颜色空间图，`color_name` 是 `COLOR_PROFILE` 键。
-    返回：命中该颜色类别的布尔数组。
-    逻辑：hue 用环形距离；Lab 同时约束亮度和色度，避免浅灰路牙/栏杆混进深灰沥青。
-    """
+    """Build a calibrated boolean mask from HSV and Lab tolerances."""
 
     profile = COLOR_PROFILE[color_name]
     hsv_center = profile["hsv_median"]
@@ -290,7 +271,7 @@ def _build_masks(
 
 
 def _segments_from_active(active: np.ndarray) -> list[tuple[int, int]]:
-    """把一维布尔扫描结果转成连续区间。"""
+    """Convert a one-dimensional boolean scan into inclusive segments."""
 
     if active.size == 0:
         return []
@@ -304,13 +285,7 @@ def _segments_from_active(active: np.ndarray) -> list[tuple[int, int]]:
 def _neighbors_are_road(
     road_cols: np.ndarray, left: int, right: int, profile: dict
 ) -> bool:
-    """判断白线段左右紧邻是否都是深灰路面。
-
-    功能：实现"真中心虚线在大片路面中间"的判别——护栏支柱外侧是路牙/红地/草而非路面。
-    参数：`road_cols` 是本扫描带内每列是否为深灰路面的布尔数组，`left/right` 是白段列区间。
-    返回：两侧侧窗内路面占比都达标时为 True。
-    逻辑：紧邻边缘跳过 `context_gap` 像素（抗白色高光外溢），再各取 `context_window` 宽侧窗统计路面占比。
-    """
+    """Require dark asphalt context on both sides of a lane-marking segment."""
 
     gap = int(profile["context_gap"])
     window = int(profile["context_window"])
@@ -332,13 +307,7 @@ def _neighbors_are_road(
 def _camera_line_state(
     image: np.ndarray, profile: dict
 ) -> tuple[float, float, float] | None:
-    """估计单个相机里的白色中心线。
-
-    功能：找连续的窄白色虚线，输出近处偏移、线方向和置信度。
-    参数：`image` 是 BGR 图像，`profile` 是白线跟踪参数。
-    返回：`(offset, heading, confidence)`；白线不足时返回 None。
-    逻辑：逐行找近中性、两侧紧邻深灰路面的短白段，按连续性串起来；排除护栏支柱、车身大白块和孤立噪声。
-    """
+    """Estimate lane offset, heading, and confidence from one camera."""
 
     if not _valid_image(image):
         return None
@@ -368,10 +337,10 @@ def _camera_line_state(
         band_min = band.min(axis=2)
         band_max = band.max(axis=2)
         band_chroma = band_max - band_min
-        # 白线：亮（最暗通道也够亮）且近中性（色度低）；护栏蓝灰色度更高被排除。
+        # Markings are bright and near-neutral; blue-gray guardrails have more chroma.
         white = (band_min >= lower) & (band_chroma <= chroma_max)
         active = np.count_nonzero(white, axis=0) >= 2
-        # 深灰路面上下文：暗灰、不太亮、低色度（排除亮路牙/红地/草），用于判断白段是否被路面包夹。
+        # Dark low-chroma asphalt must surround the candidate marking.
         road_dark = (
             (band_min >= road_dark_min)
             & (band_max <= road_dark_max)
@@ -405,15 +374,14 @@ def _camera_line_state(
     y_span = float(np.max(point_y) - np.min(point_y))
     if y_span < float(profile["min_y_span"]):
         return None
-    # 用最近/最远各约 1/3 实测点的中位数算近处中心和远处中心，不再用直线拟合外推：
-    # 弯道里直线外推会把近处 offset 放大，过 trust 门被误拒（实测约一半检出因此被丢）。
-    order = np.argsort(-point_y)  # y 大（近处）在前
+    # Medians of measured near and far thirds avoid extrapolation error in corners.
+    order = np.argsort(-point_y)  # Larger y values are nearer to the vehicle.
     k = max(1, int(round(len(points) * profile["offset_near_fraction"])))
     near_x = float(np.median(point_x[order[:k]]))
     far_x = float(np.median(point_x[order[-k:]]))
     offset = (near_x - image_center) / max(image_center, 1.0)
     heading = (far_x - near_x) / max(image_center, 1.0)
-    # 置信度与扫描行数解耦：加密扫描行不应稀释置信度（弯道里命中 3-5 个点已是可信线）。
+    # Confidence remains independent of configured scan density.
     confidence = clamp(len(points) / float(profile["confidence_full_points"]), 0.0, 1.0)
     return clamp(offset, -1.0, 1.0), clamp(heading, -1.0, 1.0), confidence
 
@@ -423,14 +391,7 @@ def _startup_single_line_candidate(
     profile: dict,
     timestamp,
 ) -> tuple[float, float, float] | None:
-    """判断发车阶段的单目白线是否可信。
-
-    功能：在 complex 开头白线只落进单个相机时，保留符号和斜率合理的右侧虚线。
-    参数：`line` 是单相机检测结果，`profile` 是白线参数，`timestamp` 是当前仿真时间。
-    返回：可信则返回原始 line，否则返回 None。
-    逻辑：只接受右侧中等 offset、正斜率的短窗口信号；负 offset 多来自左护栏，
-    接近 1.0 的 offset 多来自远处护栏或路边物体，继续拒绝。
-    """
+    """Accept a geometrically plausible monocular lane during startup only."""
 
     if line is None:
         return None
@@ -459,14 +420,7 @@ def _red_environment_single_line_candidate(
     profile: dict,
     red_environment: bool,
 ) -> tuple[float, float, float] | None:
-    """判断 complex 弯中单目白线是否可作低置信兜底。
-
-    功能：在红色场地里，一侧相机可能因透视/虚线间隙漏掉白线；另一侧若已通过路面上下文过滤，
-    可低置信接入，避免控制链路短暂失去中线。
-    参数：`line` 是单相机检测结果，`red_environment` 来自左右画面的红色场地判定。
-    返回：可信则返回置信度折扣后的 line；否则返回 None。
-    逻辑：只在 complex 红色环境启用，且要求 offset 仍在主信任门内；basic 和发车单目逻辑互不影响。
-    """
+    """Provide a discounted monocular fallback in the red complex environment."""
 
     if line is None or not red_environment or not profile["single_camera_enable"]:
         return None
@@ -486,14 +440,7 @@ def _stereo_line_state(
     timestamp=None,
     red_environment: bool | None = None,
 ) -> tuple[float, float, float]:
-    """融合左右相机的白线状态。
-
-    功能：估计白线相对车身中轴的位置和方向。
-    参数：左右 BGR 图像和白线参数。
-    返回：`(line_offset, line_heading, line_confidence)`。
-    逻辑：双目都看到连续白线时才输出高置信，避免单目被车身、栏杆或断线误导。
-    complex 发车窗口里允许符号/斜率受限的单目右侧白线，用于把车从初始左偏捕获回中线。
-    """
+    """Fuse stereo lane observations with restricted monocular fallbacks."""
 
     if not profile["enable"]:
         return 0.0, 0.0, 0.0
@@ -524,7 +471,7 @@ def _stereo_line_state(
 def _merge_close_segments(
     segments: list[tuple[int, int]], max_gap: int | None = None
 ) -> list[tuple[int, int]]:
-    """合并被车道虚线或护栏细缝切开的相邻道路段。"""
+    """Merge road segments separated by small marking or rail gaps."""
 
     if not segments:
         return []
@@ -543,7 +490,7 @@ def _merge_close_segments(
 def _road_segments(
     mask: np.ndarray, y: int, row_band: int, max_gap: int | None = None
 ) -> list[tuple[int, int]]:
-    """从道路 mask 的水平横带中提取连续道路区间。"""
+    """Extract continuous road segments from a horizontal mask band."""
 
     y0 = max(int(y) - row_band, 0)
     y1 = min(int(y) + row_band + 1, mask.shape[0])
@@ -556,13 +503,7 @@ def _road_segments(
 def _edge_fallback_segments(
     edge_mask: np.ndarray, y: int, row_band: int
 ) -> list[tuple[int, int]]:
-    """从边缘横带中推断候选走廊。
-
-    功能：在道路 mask 没有可用区间时，用相邻边缘之间的区域做兜底。
-    参数：`edge_mask` 是 Canny 结果，`y` 是扫描线，`row_band` 是横带半宽。
-    返回：候选 `(left, right)` 区间。
-    逻辑：只取相邻边缘，避免随机纹理生成大量跨越式组合。
-    """
+    """Infer fallback corridors between adjacent Canny edge segments."""
 
     y0 = max(int(y) - row_band, 0)
     y1 = min(int(y) + row_band + 1, edge_mask.shape[0])
@@ -584,7 +525,7 @@ def _filter_segments(
     width: int,
     max_width_ratio: float | None = None,
 ) -> list[tuple[int, int]]:
-    """按道路宽度约束过滤候选区间。"""
+    """Filter candidate road segments by plausible width."""
 
     min_width = float(VISION_PROFILE["min_segment_width"])
     if max_width_ratio is None:
@@ -604,13 +545,7 @@ def _filter_fallback_segments(
     previous_center: float,
     has_previous: bool,
 ) -> list[tuple[int, int]]:
-    """过滤容易由白线碎片生成的窄 fallback 走廊。
-
-    功能：避免近处孤立车道线/接缝小段把扫描 seed 拉到内侧。
-    参数：`segments` 是边缘 fallback 候选，`previous_center` 是上一条中心。
-    返回：过滤后的候选区间。
-    逻辑：宽 fallback 正常保留；窄 fallback 只有在靠近画面中心或延续上一中心时才可用。
-    """
+    """Reject narrow edge corridors unless they continue a credible center."""
 
     if not segments:
         return []
@@ -641,13 +576,7 @@ def _localize_wide_segment(
     width: int,
     enabled: bool = True,
 ) -> tuple[int, int]:
-    """把过宽道路段截成上一扫描中心附近的局部走廊。
-
-    功能：处理复合弯中多条道路被暗色 mask 连成一片的情况。
-    参数：`segment` 是候选暗区，`previous_center` 是近处已选中心，`width` 是图像宽度。
-    返回：可能被截窄后的 `(left, right)`。
-    逻辑：正常宽度道路不处理；过宽时保留靠近上一中心的一段，避免用整块暗区中心。
-    """
+    """Crop an over-wide mask region around the preceding scan center."""
 
     left, right = segment
     segment_width = float(right - left + 1)
@@ -679,13 +608,7 @@ def _pick_segment(
     near_obstacle: bool,
     wide_localize_enabled: bool,
 ) -> tuple[tuple[int, int] | None, bool]:
-    """选择当前扫描线的最佳走廊 segment。
-
-    功能：优先从道路表面 mask 选连续区间，失败时再用边缘区间兜底。
-    参数：`road_mask` 和 `edge_mask` 是完整尺寸 mask，`previous_center` 是上一条有效扫描线中心。
-    返回：选中的 `(left, right)` 和是否使用边缘 fallback。
-    逻辑：候选区间必须满足宽度约束，并尽量靠近上一条有效扫描线。
-    """
+    """Choose the most coherent road corridor, using edges only as fallback."""
 
     width = road_mask.shape[1]
     row_band = int(VISION_PROFILE["row_band"])
@@ -722,7 +645,7 @@ def _pick_segment(
         candidates, key=lambda item: abs(((item[0] + item[1]) * 0.5) - previous_center)
     )
 
-    # ── 跨帧轨迹锚定：超宽段（道路合并）时，优先选靠近上一帧同高度中心的分段 ──
+    # Temporal anchors stabilize the choice when an over-wide mask contains branches.
     temporal_anchor: float | None = None
     if wide_localize_enabled and _STATE.last_frame_centers:
         height = road_mask.shape[0]
@@ -745,7 +668,7 @@ def _pick_segment(
                 and abs(temporal_anchor - previous_center) > temporal_window * 0.5
             ):
                 previous_center = previous_center * 0.35 + temporal_anchor * 0.65
-                # 重新选最佳分段（因为 previous_center 已调整）
+                # Re-evaluate candidates after replacing the local center anchor.
                 best = min(
                     candidates,
                     key=lambda item: abs(((item[0] + item[1]) * 0.5) - previous_center),
@@ -769,14 +692,7 @@ def _score_scan(
     fallback_count: int,
     red_environment: bool = False,
 ) -> tuple[float, int]:
-    """计算单侧摄像头置信度。
-
-    功能：综合有效扫描线、宽度稳定性、中心稳定性和纹理分数。
-    参数：扫描点、宽度序列、纹理分数、mask 命中率和 fallback 次数。
-    返回：置信度和调试标记。
-    逻辑：有效线太少、整图近似全不命中时重降权；饱和 mask 保留中等降权，
-    避免远处路面可见但底部草地铺满 ROI 时整段丢线。
-    """
+    """Score one camera scan from coverage, stability, texture, and fallback use."""
 
     debug_flags = 0
     scan_count = float(VISION_PROFILE["scan_count"])
@@ -972,7 +888,7 @@ def _scan_image(
 
 
 def _usable(scan: _CameraScan) -> bool:
-    """判断单侧扫描结果是否足以参与融合。"""
+    """Return whether one camera scan is reliable enough for fusion."""
 
     return (
         scan.center_points.size > 0
@@ -981,7 +897,7 @@ def _usable(scan: _CameraScan) -> bool:
 
 
 def _near_center(scan: _CameraScan) -> float:
-    """读取最靠近车辆的扫描中心。"""
+    """Return the scan center nearest to the vehicle."""
 
     if scan.center_points.size == 0:
         return 320.0
@@ -989,7 +905,7 @@ def _near_center(scan: _CameraScan) -> float:
 
 
 def _to_obs(scan: _CameraScan, debug_flags: int | None = None) -> PerceptionObs:
-    """把单侧扫描结果转换为公开观测结构。"""
+    """Convert one camera scan into the public perception contract."""
 
     flags = scan.debug_flags if debug_flags is None else debug_flags
     return PerceptionObs(
@@ -1008,13 +924,7 @@ def _to_obs(scan: _CameraScan, debug_flags: int | None = None) -> PerceptionObs:
 def _fused_obstacle(
     left_scan: _CameraScan, right_scan: _CameraScan
 ) -> tuple[bool, float, float]:
-    """融合双目近车检测结果。
-
-    功能：给 policy 一个稳定的左/中/右对手位置。
-    参数：左右 `_CameraScan`。
-    返回：`(near, x, size)`。
-    逻辑：只有一侧检测到就用那侧；两侧都检测到时按车身块尺寸加权，尺寸更大的近车影响更大。
-    """
+    """Fuse stereo opponent position using component size as confidence."""
 
     candidates = [
         scan
@@ -1131,11 +1041,7 @@ def _with_line_state(
     timestamp=None,
     red_environment: bool | None = None,
 ) -> PerceptionObs:
-    """把双目白线状态写入观测结果。
-
-    不依赖道路观测质量：道路 mask 饱和（蓝门/天空）或丢线时白线往往仍可见，
-    是 R011 后置修正在这些帧上唯一的方向来源。
-    """
+    """Attach stereo lane state independently of road-mask confidence."""
 
     if (
         _valid_image(left_img)
@@ -1201,22 +1107,14 @@ def extract_observation(
         timestamp,
         red_environment=bool(left_scan.red_environment or right_scan.red_environment),
     )
-    # 光流卡死检测（frame_motion）只属于 with_other_cars；单车不算，省每帧 resize 开销，
-    # 且默认 frame_motion=100（视作在动）保证 motion-stall 永不触发。
+    # Frame-motion blockage detection belongs only to the multi-car profile.
     if enable_opp:
         obs.frame_motion = _update_frame_motion(left_img, timestamp)
     return obs
 
 
 def _update_frame_motion(image, timestamp=None) -> float:
-    """估计帧间图像变化量（下采样灰度平均绝对差）。
-
-    功能：给一个"画面在不在流动"的标量——高=车在动，低≈被顶住不动（物理卡死）。
-    参数：`image` 单张 BGR 图（用左相机），`timestamp` 用于检测仿真重启清状态。
-    返回：MAD（约 0~50）；首帧或无上一帧时返回高值（视作在动）。
-    逻辑：几何签名在直路和顶栏时都稳定、区分不了卡死；原始像素帧差能区分——
-        车真在开时场景流动、MAD 大，被顶住不动时画面几乎不变、MAD≈传感器噪声。
-    """
+    """Estimate downsampled grayscale frame motion as mean absolute difference."""
 
     if not _valid_image(image):
         return 100.0
@@ -1228,7 +1126,7 @@ def _update_frame_motion(image, timestamp=None) -> float:
         and timestamp is not None
         and float(timestamp) < _STATE.previous_motion_timestamp - 1e-6
     ):
-        _STATE.previous_motion_gray = None  # 仿真重启/时间回退：清上一帧
+        _STATE.previous_motion_gray = None  # Clear history after simulator restart.
     prev = _STATE.previous_motion_gray
     _STATE.previous_motion_gray = small
     _STATE.previous_motion_timestamp = None if timestamp is None else float(timestamp)
