@@ -27,28 +27,28 @@ class PerceptionState:
     previous_motion_timestamp: float | None = None
 
 
-_STATE = PerceptionState()
+_PERCEPTION_STATE = PerceptionState()
 
 
 def _save_frame_centers(centers: list[tuple[float, float]]) -> None:
     """Store current scan centers as temporal anchors for the next frame."""
     if not centers:
-        _STATE.last_frame_centers = None
+        _PERCEPTION_STATE.last_frame_centers = None
     else:
-        _STATE.last_frame_centers = list(centers)
+        _PERCEPTION_STATE.last_frame_centers = list(centers)
 
 
 def _maybe_reset_perception_by_timestamp(timestamp: float | None) -> None:
     """Clear temporal anchors after timestamp rollback or a long gap."""
     if timestamp is None:
-        _STATE.last_frame_centers = None
-        _STATE.last_frame_timestamp = None
+        _PERCEPTION_STATE.last_frame_centers = None
+        _PERCEPTION_STATE.last_frame_timestamp = None
         return
-    if _STATE.last_frame_timestamp is not None:
-        elapsed = float(timestamp) - float(_STATE.last_frame_timestamp)
+    if _PERCEPTION_STATE.last_frame_timestamp is not None:
+        elapsed = float(timestamp) - float(_PERCEPTION_STATE.last_frame_timestamp)
         if elapsed < 0.0 or elapsed > 2.0:
-            _STATE.last_frame_centers = None
-    _STATE.last_frame_timestamp = float(timestamp)
+            _PERCEPTION_STATE.last_frame_centers = None
+    _PERCEPTION_STATE.last_frame_timestamp = float(timestamp)
 
 
 @dataclass
@@ -647,9 +647,9 @@ def _pick_segment(
 
     # Temporal anchors stabilize the choice when an over-wide mask contains branches.
     temporal_anchor: float | None = None
-    if wide_localize_enabled and _STATE.last_frame_centers:
+    if wide_localize_enabled and _PERCEPTION_STATE.last_frame_centers:
         best_y_dist = float("inf")
-        for cx, cy in _STATE.last_frame_centers:
+        for cx, cy in _PERCEPTION_STATE.last_frame_centers:
             dist = abs(cy - float(y))
             if dist < best_y_dist:
                 best_y_dist = dist
@@ -1066,8 +1066,8 @@ def _with_line_state(
 def reset_perception_state() -> None:
     """Replace all perception memory with a clean session state."""
 
-    global _STATE
-    _STATE = PerceptionState()
+    global _PERCEPTION_STATE
+    _PERCEPTION_STATE = PerceptionState()
 
 
 def extract_observation(
@@ -1121,14 +1121,14 @@ def _update_frame_motion(image, timestamp=None) -> float:
         cv2.cvtColor(image, cv2.COLOR_BGR2GRAY), (64, 48), interpolation=cv2.INTER_AREA
     )
     if (
-        _STATE.previous_motion_timestamp is not None
+        _PERCEPTION_STATE.previous_motion_timestamp is not None
         and timestamp is not None
-        and float(timestamp) < _STATE.previous_motion_timestamp - 1e-6
+        and float(timestamp) < _PERCEPTION_STATE.previous_motion_timestamp - 1e-6
     ):
-        _STATE.previous_motion_gray = None  # Clear history after simulator restart.
-    prev = _STATE.previous_motion_gray
-    _STATE.previous_motion_gray = small
-    _STATE.previous_motion_timestamp = None if timestamp is None else float(timestamp)
+        _PERCEPTION_STATE.previous_motion_gray = None  # Clear history after simulator restart.
+    prev = _PERCEPTION_STATE.previous_motion_gray
+    _PERCEPTION_STATE.previous_motion_gray = small
+    _PERCEPTION_STATE.previous_motion_timestamp = None if timestamp is None else float(timestamp)
     if prev is None:
         return 100.0
     return float(np.mean(np.abs(small.astype(np.int16) - prev.astype(np.int16))))
@@ -1137,5 +1137,5 @@ def _update_frame_motion(image, timestamp=None) -> float:
 def reset_frame_motion_state() -> None:
     """Clear only frame-motion memory while retaining road anchors."""
 
-    _STATE.previous_motion_gray = None
-    _STATE.previous_motion_timestamp = None
+    _PERCEPTION_STATE.previous_motion_gray = None
+    _PERCEPTION_STATE.previous_motion_timestamp = None

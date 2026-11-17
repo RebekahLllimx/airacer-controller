@@ -3,7 +3,7 @@
 The official SDK is kept in a separate checkout. Point `AIRACER_SDK` to its `sdk/` directory:
 
 ```bash
-git clone https://github.com/pkudsa-ai-racer/pkudsa.airacer.git ../pkudsa.airacer
+git clone https://github.com/pkulab409/pkudsa.airacer.git ../pkudsa.airacer
 export AIRACER_SDK="$(cd ../pkudsa.airacer/sdk && pwd)"
 python "$AIRACER_SDK/check_env.py"
 ```
@@ -60,6 +60,8 @@ python "$AIRACER_SDK/run_local.py" \
 Before launching a world, set **Webots > Settings > General > Python command** to the same interpreter used to install `numpy` and `opencv-python`. A generic `python3` entry on macOS may resolve to the system interpreter even when the SDK launcher runs from a virtual environment. In that case the Webots car controller exits before loading the submission, typically with `ModuleNotFoundError: cv2`.
 
 Keep the Webots and SDK revisions together in the run record. A world that opens with PROTO field errors or missing SDK assets is not a valid controller result; resolve the SDK/Webots compatibility issue before reporting lap or collision metrics.
+
+The SDK revision used for the November 2026 compatibility run referenced Webots assets that were no longer available through its bundled paths and shipped basic-world checkpoint coordinates that did not match the included oval. The run therefore used an isolated SDK worktree, exact Cyberbotics R2025a assets, absolute local asset paths, and checkpoint coordinates measured from `track_basic.wbt`. Keep these compatibility changes outside the controller repository and record them with the result; do not silently treat a modified local world as an unchanged platform environment.
 
 List the worlds and slots supported by the installed SDK:
 

@@ -43,7 +43,7 @@ class GeometryEstimate:
     right_margin_near: float
 
 
-_STATE = EstimatorState()
+_ESTIMATOR_STATE = EstimatorState()
 
 
 def _lost_track(
@@ -54,7 +54,7 @@ def _lost_track(
     """Decay prior geometry while preserving current lane and obstacle evidence."""
 
     if red_environment is None:
-        red_environment = _STATE.last_track.red_environment
+        red_environment = _ESTIMATOR_STATE.last_track.red_environment
     if obs is not None:
         line_offset = clamp(float(obs.line_offset), -1.0, 1.0)
         line_heading = clamp(float(obs.line_heading), -1.0, 1.0)
@@ -63,25 +63,25 @@ def _lost_track(
         obstacle_x = clamp(float(obs.obstacle_x), -1.0, 1.0)
         obstacle_size = max(float(obs.obstacle_size), 0.0)
     else:
-        line_offset = _STATE.last_track.line_offset
-        line_heading = _STATE.last_track.line_heading
+        line_offset = _ESTIMATOR_STATE.last_track.line_offset
+        line_heading = _ESTIMATOR_STATE.last_track.line_heading
         line_confidence = 0.0
-        near_obstacle = _STATE.last_track.near_obstacle
-        obstacle_x = _STATE.last_track.obstacle_x
-        obstacle_size = _STATE.last_track.obstacle_size
+        near_obstacle = _ESTIMATOR_STATE.last_track.near_obstacle
+        obstacle_x = _ESTIMATOR_STATE.last_track.obstacle_x
+        obstacle_size = _ESTIMATOR_STATE.last_track.obstacle_size
     return TrackState(
-        _STATE.last_track.lateral_error * ESTIMATOR_PROFILE["lost_lateral_decay"],
-        _STATE.last_track.heading_error * ESTIMATOR_PROFILE["lost_heading_decay"],
-        _STATE.last_track.curvature * ESTIMATOR_PROFILE["lost_curvature_decay"],
-        _STATE.last_track.lookahead_error * ESTIMATOR_PROFILE["lost_lookahead_decay"],
+        _ESTIMATOR_STATE.last_track.lateral_error * ESTIMATOR_PROFILE["lost_lateral_decay"],
+        _ESTIMATOR_STATE.last_track.heading_error * ESTIMATOR_PROFILE["lost_heading_decay"],
+        _ESTIMATOR_STATE.last_track.curvature * ESTIMATOR_PROFILE["lost_curvature_decay"],
+        _ESTIMATOR_STATE.last_track.lookahead_error * ESTIMATOR_PROFILE["lost_lookahead_decay"],
         clamp(confidence, 0.0, ESTIMATOR_PROFILE["lost_confidence"]),
         True,
         red_environment,
         line_offset,
         line_heading,
         line_confidence,
-        _STATE.last_track.left_margin_near,
-        _STATE.last_track.right_margin_near,
+        _ESTIMATOR_STATE.last_track.left_margin_near,
+        _ESTIMATOR_STATE.last_track.right_margin_near,
         near_obstacle,
         obstacle_x,
         obstacle_size,
@@ -201,26 +201,26 @@ def _update_line_memory(
         <= ESTIMATOR_PROFILE["line_startup_heading_max"]
     )
     if line_trust > 0.0 and in_startup and startup_line:
-        _STATE.line_memory_frames = int(ESTIMATOR_PROFILE["line_startup_memory_frames"])
-        _STATE.line_memory_offset = clamp(float(obs.line_offset), -1.0, 1.0)
-        _STATE.line_memory_heading = clamp(float(obs.line_heading), -1.0, 1.0)
-        _STATE.line_memory_confidence = clamp(float(obs.line_confidence), 0.0, 1.0)
+        _ESTIMATOR_STATE.line_memory_frames = int(ESTIMATOR_PROFILE["line_startup_memory_frames"])
+        _ESTIMATOR_STATE.line_memory_offset = clamp(float(obs.line_offset), -1.0, 1.0)
+        _ESTIMATOR_STATE.line_memory_heading = clamp(float(obs.line_heading), -1.0, 1.0)
+        _ESTIMATOR_STATE.line_memory_confidence = clamp(float(obs.line_confidence), 0.0, 1.0)
         return line_trust
 
-    if not in_startup or _STATE.line_memory_frames <= 0:
+    if not in_startup or _ESTIMATOR_STATE.line_memory_frames <= 0:
         if not in_startup:
-            _STATE.line_memory_frames = 0
+            _ESTIMATOR_STATE.line_memory_frames = 0
         return line_trust
 
-    _STATE.line_memory_frames -= 1
-    _STATE.line_memory_offset *= ESTIMATOR_PROFILE["line_startup_memory_value_decay"]
-    _STATE.line_memory_heading *= ESTIMATOR_PROFILE["line_startup_memory_value_decay"]
-    _STATE.line_memory_confidence *= ESTIMATOR_PROFILE[
+    _ESTIMATOR_STATE.line_memory_frames -= 1
+    _ESTIMATOR_STATE.line_memory_offset *= ESTIMATOR_PROFILE["line_startup_memory_value_decay"]
+    _ESTIMATOR_STATE.line_memory_heading *= ESTIMATOR_PROFILE["line_startup_memory_value_decay"]
+    _ESTIMATOR_STATE.line_memory_confidence *= ESTIMATOR_PROFILE[
         "line_startup_memory_value_decay"
     ]
-    obs.line_offset = _STATE.line_memory_offset
-    obs.line_heading = _STATE.line_memory_heading
-    obs.line_confidence = _STATE.line_memory_confidence
+    obs.line_offset = _ESTIMATOR_STATE.line_memory_offset
+    obs.line_heading = _ESTIMATOR_STATE.line_memory_heading
+    obs.line_confidence = _ESTIMATOR_STATE.line_memory_confidence
     remembered_trust = _line_target_trust(obs, timestamp, red_environment)
     return clamp(
         remembered_trust * ESTIMATOR_PROFILE["line_startup_memory_trust_scale"],
@@ -306,25 +306,25 @@ def _line_only_track(
     alpha = _smooth_alpha(confidence)
     track = TrackState(
         _smooth_limited(
-            _STATE.last_track.lateral_error,
+            _ESTIMATOR_STATE.last_track.lateral_error,
             lateral_error,
             alpha,
             ESTIMATOR_PROFILE["max_error_delta"],
         ),
         _smooth_limited(
-            _STATE.last_track.heading_error,
+            _ESTIMATOR_STATE.last_track.heading_error,
             heading_error,
             alpha,
             ESTIMATOR_PROFILE["max_heading_delta"],
         ),
         _smooth_limited(
-            _STATE.last_track.curvature,
+            _ESTIMATOR_STATE.last_track.curvature,
             0.0,
             ESTIMATOR_PROFILE["curve_smooth_alpha"],
             ESTIMATOR_PROFILE["max_curvature_delta"],
         ),
         _smooth_limited(
-            _STATE.last_track.lookahead_error,
+            _ESTIMATOR_STATE.last_track.lookahead_error,
             lookahead_error,
             alpha,
             ESTIMATOR_PROFILE["max_error_delta"],
@@ -335,8 +335,8 @@ def _line_only_track(
         clamp(float(obs.line_offset), -1.0, 1.0),
         clamp(float(obs.line_heading), -1.0, 1.0),
         clamp(float(obs.line_confidence), 0.0, 1.0),
-        _STATE.last_track.left_margin_near,
-        _STATE.last_track.right_margin_near,
+        _ESTIMATOR_STATE.last_track.left_margin_near,
+        _ESTIMATOR_STATE.last_track.right_margin_near,
         bool(obs.near_obstacle),
         clamp(float(obs.obstacle_x), -1.0, 1.0),
         max(float(obs.obstacle_size), 0.0),
@@ -478,16 +478,16 @@ def _smooth_limited(
 def reset_estimator_state() -> None:
     """Replace the session state with a clean instance."""
 
-    global _STATE
-    _STATE = EstimatorState()
+    global _ESTIMATOR_STATE
+    _ESTIMATOR_STATE = EstimatorState()
 
 
 def _maybe_reset_estimator_by_timestamp(timestamp: float) -> None:
     """Reset estimator memory after a timestamp rollback or long input gap."""
 
-    if _STATE.last_timestamp is None:
+    if _ESTIMATOR_STATE.last_timestamp is None:
         return
-    elapsed = float(timestamp) - float(_STATE.last_timestamp)
+    elapsed = float(timestamp) - float(_ESTIMATOR_STATE.last_timestamp)
     if elapsed < 0.0 or elapsed > ESTIMATOR_PROFILE["timestamp_reset_gap"]:
         reset_estimator_state()
 
@@ -497,12 +497,12 @@ def _red_environment(obs: PerceptionObs) -> bool:
 
     observed = bool(obs.debug_flags & _RED_ENVIRONMENT_FLAG)
     if observed:
-        _STATE.red_environment_streak += 1
-    elif not _STATE.last_red_environment:
-        _STATE.red_environment_streak = 0
-    if _STATE.red_environment_streak >= _RED_ENVIRONMENT_LATCH_FRAMES:
-        _STATE.last_red_environment = True
-    return observed or _STATE.last_red_environment
+        _ESTIMATOR_STATE.red_environment_streak += 1
+    elif not _ESTIMATOR_STATE.last_red_environment:
+        _ESTIMATOR_STATE.red_environment_streak = 0
+    if _ESTIMATOR_STATE.red_environment_streak >= _RED_ENVIRONMENT_LATCH_FRAMES:
+        _ESTIMATOR_STATE.last_red_environment = True
+    return observed or _ESTIMATOR_STATE.last_red_environment
 
 
 def _measure_geometry(
@@ -595,25 +595,25 @@ def _smoothed_track(
     )
     return TrackState(
         _smooth_limited(
-            _STATE.last_track.lateral_error,
+            _ESTIMATOR_STATE.last_track.lateral_error,
             geometry.lateral_error,
             alpha,
             ESTIMATOR_PROFILE["max_error_delta"],
         ),
         _smooth_limited(
-            _STATE.last_track.heading_error,
+            _ESTIMATOR_STATE.last_track.heading_error,
             geometry.heading_error,
             alpha,
             ESTIMATOR_PROFILE["max_heading_delta"],
         ),
         _smooth_limited(
-            _STATE.last_track.curvature,
+            _ESTIMATOR_STATE.last_track.curvature,
             geometry.curvature,
             curve_alpha,
             ESTIMATOR_PROFILE["max_curvature_delta"],
         ),
         _smooth_limited(
-            _STATE.last_track.lookahead_error,
+            _ESTIMATOR_STATE.last_track.lookahead_error,
             geometry.lookahead_error,
             alpha,
             ESTIMATOR_PROFILE["max_error_delta"],
@@ -649,15 +649,15 @@ def estimate_track(obs: PerceptionObs, timestamp: float) -> TrackState:
             if line_only_allowed and line_trust > 0.0
             else _lost_track(obs.confidence, red_environment, obs)
         )
-        _STATE.last_track = track
-        _STATE.last_timestamp = timestamp
+        _ESTIMATOR_STATE.last_track = track
+        _ESTIMATOR_STATE.last_timestamp = timestamp
         return track
     if geometry.confidence < ESTIMATOR_PROFILE["lost_confidence"]:
         track = _lost_track(geometry.confidence, red_environment, obs)
-        _STATE.last_track = track
-        _STATE.last_timestamp = timestamp
+        _ESTIMATOR_STATE.last_track = track
+        _ESTIMATOR_STATE.last_timestamp = timestamp
         return track
     track = _smoothed_track(obs, geometry, red_environment)
-    _STATE.last_track = track
-    _STATE.last_timestamp = timestamp
+    _ESTIMATOR_STATE.last_track = track
+    _ESTIMATOR_STATE.last_timestamp = timestamp
     return track

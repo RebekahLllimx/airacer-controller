@@ -140,24 +140,24 @@ class PerceptionState:
     last_frame_timestamp: float | None = None
     previous_motion_gray: np.ndarray | None = None
     previous_motion_timestamp: float | None = None
-_STATE = PerceptionState()
+_PERCEPTION_STATE = PerceptionState()
 
 def _save_frame_centers(centers):
     if not centers:
-        _STATE.last_frame_centers = None
+        _PERCEPTION_STATE.last_frame_centers = None
     else:
-        _STATE.last_frame_centers = list(centers)
+        _PERCEPTION_STATE.last_frame_centers = list(centers)
 
 def _maybe_reset_perception_by_timestamp(timestamp):
     if timestamp is None:
-        _STATE.last_frame_centers = None
-        _STATE.last_frame_timestamp = None
+        _PERCEPTION_STATE.last_frame_centers = None
+        _PERCEPTION_STATE.last_frame_timestamp = None
         return
-    if _STATE.last_frame_timestamp is not None:
-        elapsed = float(timestamp) - float(_STATE.last_frame_timestamp)
+    if _PERCEPTION_STATE.last_frame_timestamp is not None:
+        elapsed = float(timestamp) - float(_PERCEPTION_STATE.last_frame_timestamp)
         if elapsed < 0.0 or elapsed > 2.0:
-            _STATE.last_frame_centers = None
-    _STATE.last_frame_timestamp = float(timestamp)
+            _PERCEPTION_STATE.last_frame_centers = None
+    _PERCEPTION_STATE.last_frame_timestamp = float(timestamp)
 
 @dataclass
 class _CameraScan:
@@ -518,9 +518,9 @@ def _pick_segment(road_mask, edge_mask, y, previous_center, has_previous, near_o
         return (None, used_fallback)
     best = min(candidates, key=lambda item: abs((item[0] + item[1]) * 0.5 - previous_center))
     temporal_anchor: float | None = None
-    if wide_localize_enabled and _STATE.last_frame_centers:
+    if wide_localize_enabled and _PERCEPTION_STATE.last_frame_centers:
         best_y_dist = float('inf')
-        for (cx, cy) in _STATE.last_frame_centers:
+        for (cx, cy) in _PERCEPTION_STATE.last_frame_centers:
             dist = abs(cy - float(y))
             if dist < best_y_dist:
                 best_y_dist = dist
@@ -697,8 +697,8 @@ def _with_line_state(obs, left_img, right_img, timestamp=None, red_environment=N
     return obs
 
 def reset_perception_state():
-    global _STATE
-    _STATE = PerceptionState()
+    global _PERCEPTION_STATE
+    _PERCEPTION_STATE = PerceptionState()
 
 def extract_observation(left_img, right_img, timestamp=None, profile=None):
     if profile is None:
@@ -717,18 +717,18 @@ def _update_frame_motion(image, timestamp=None):
     if not _valid_image(image):
         return 100.0
     small = cv2.resize(cv2.cvtColor(image, cv2.COLOR_BGR2GRAY), (64, 48), interpolation=cv2.INTER_AREA)
-    if _STATE.previous_motion_timestamp is not None and timestamp is not None and (float(timestamp) < _STATE.previous_motion_timestamp - 1e-06):
-        _STATE.previous_motion_gray = None
-    prev = _STATE.previous_motion_gray
-    _STATE.previous_motion_gray = small
-    _STATE.previous_motion_timestamp = None if timestamp is None else float(timestamp)
+    if _PERCEPTION_STATE.previous_motion_timestamp is not None and timestamp is not None and (float(timestamp) < _PERCEPTION_STATE.previous_motion_timestamp - 1e-06):
+        _PERCEPTION_STATE.previous_motion_gray = None
+    prev = _PERCEPTION_STATE.previous_motion_gray
+    _PERCEPTION_STATE.previous_motion_gray = small
+    _PERCEPTION_STATE.previous_motion_timestamp = None if timestamp is None else float(timestamp)
     if prev is None:
         return 100.0
     return float(np.mean(np.abs(small.astype(np.int16) - prev.astype(np.int16))))
 
 def reset_frame_motion_state():
-    _STATE.previous_motion_gray = None
-    _STATE.previous_motion_timestamp = None
+    _PERCEPTION_STATE.previous_motion_gray = None
+    _PERCEPTION_STATE.previous_motion_timestamp = None
 _RED_ENVIRONMENT_FLAG = 32
 _RED_ENVIRONMENT_LATCH_FRAMES = 3
 
@@ -756,11 +756,11 @@ class GeometryEstimate:
     confidence: float
     left_margin_near: float
     right_margin_near: float
-_STATE = EstimatorState()
+_ESTIMATOR_STATE = EstimatorState()
 
 def _lost_track(confidence, red_environment=None, obs=None):
     if red_environment is None:
-        red_environment = _STATE.last_track.red_environment
+        red_environment = _ESTIMATOR_STATE.last_track.red_environment
     if obs is not None:
         line_offset = clamp(float(obs.line_offset), -1.0, 1.0)
         line_heading = clamp(float(obs.line_heading), -1.0, 1.0)
@@ -769,13 +769,13 @@ def _lost_track(confidence, red_environment=None, obs=None):
         obstacle_x = clamp(float(obs.obstacle_x), -1.0, 1.0)
         obstacle_size = max(float(obs.obstacle_size), 0.0)
     else:
-        line_offset = _STATE.last_track.line_offset
-        line_heading = _STATE.last_track.line_heading
+        line_offset = _ESTIMATOR_STATE.last_track.line_offset
+        line_heading = _ESTIMATOR_STATE.last_track.line_heading
         line_confidence = 0.0
-        near_obstacle = _STATE.last_track.near_obstacle
-        obstacle_x = _STATE.last_track.obstacle_x
-        obstacle_size = _STATE.last_track.obstacle_size
-    return TrackState(_STATE.last_track.lateral_error * ESTIMATOR_PROFILE['lost_lateral_decay'], _STATE.last_track.heading_error * ESTIMATOR_PROFILE['lost_heading_decay'], _STATE.last_track.curvature * ESTIMATOR_PROFILE['lost_curvature_decay'], _STATE.last_track.lookahead_error * ESTIMATOR_PROFILE['lost_lookahead_decay'], clamp(confidence, 0.0, ESTIMATOR_PROFILE['lost_confidence']), True, red_environment, line_offset, line_heading, line_confidence, _STATE.last_track.left_margin_near, _STATE.last_track.right_margin_near, near_obstacle, obstacle_x, obstacle_size, obs.frame_motion)
+        near_obstacle = _ESTIMATOR_STATE.last_track.near_obstacle
+        obstacle_x = _ESTIMATOR_STATE.last_track.obstacle_x
+        obstacle_size = _ESTIMATOR_STATE.last_track.obstacle_size
+    return TrackState(_ESTIMATOR_STATE.last_track.lateral_error * ESTIMATOR_PROFILE['lost_lateral_decay'], _ESTIMATOR_STATE.last_track.heading_error * ESTIMATOR_PROFILE['lost_heading_decay'], _ESTIMATOR_STATE.last_track.curvature * ESTIMATOR_PROFILE['lost_curvature_decay'], _ESTIMATOR_STATE.last_track.lookahead_error * ESTIMATOR_PROFILE['lost_lookahead_decay'], clamp(confidence, 0.0, ESTIMATOR_PROFILE['lost_confidence']), True, red_environment, line_offset, line_heading, line_confidence, _ESTIMATOR_STATE.last_track.left_margin_near, _ESTIMATOR_STATE.last_track.right_margin_near, near_obstacle, obstacle_x, obstacle_size, obs.frame_motion)
 
 def _clean_points(points):
     try:
@@ -842,22 +842,22 @@ def _update_line_memory(obs, line_trust, timestamp, red_environment):
     in_startup = red_environment and timestamp <= ESTIMATOR_PROFILE['line_startup_until']
     startup_line = ESTIMATOR_PROFILE['line_startup_offset_min'] <= obs.line_offset <= ESTIMATOR_PROFILE['line_startup_offset_max'] and ESTIMATOR_PROFILE['line_startup_heading_min'] <= obs.line_heading <= ESTIMATOR_PROFILE['line_startup_heading_max']
     if line_trust > 0.0 and in_startup and startup_line:
-        _STATE.line_memory_frames = int(ESTIMATOR_PROFILE['line_startup_memory_frames'])
-        _STATE.line_memory_offset = clamp(float(obs.line_offset), -1.0, 1.0)
-        _STATE.line_memory_heading = clamp(float(obs.line_heading), -1.0, 1.0)
-        _STATE.line_memory_confidence = clamp(float(obs.line_confidence), 0.0, 1.0)
+        _ESTIMATOR_STATE.line_memory_frames = int(ESTIMATOR_PROFILE['line_startup_memory_frames'])
+        _ESTIMATOR_STATE.line_memory_offset = clamp(float(obs.line_offset), -1.0, 1.0)
+        _ESTIMATOR_STATE.line_memory_heading = clamp(float(obs.line_heading), -1.0, 1.0)
+        _ESTIMATOR_STATE.line_memory_confidence = clamp(float(obs.line_confidence), 0.0, 1.0)
         return line_trust
-    if not in_startup or _STATE.line_memory_frames <= 0:
+    if not in_startup or _ESTIMATOR_STATE.line_memory_frames <= 0:
         if not in_startup:
-            _STATE.line_memory_frames = 0
+            _ESTIMATOR_STATE.line_memory_frames = 0
         return line_trust
-    _STATE.line_memory_frames -= 1
-    _STATE.line_memory_offset *= ESTIMATOR_PROFILE['line_startup_memory_value_decay']
-    _STATE.line_memory_heading *= ESTIMATOR_PROFILE['line_startup_memory_value_decay']
-    _STATE.line_memory_confidence *= ESTIMATOR_PROFILE['line_startup_memory_value_decay']
-    obs.line_offset = _STATE.line_memory_offset
-    obs.line_heading = _STATE.line_memory_heading
-    obs.line_confidence = _STATE.line_memory_confidence
+    _ESTIMATOR_STATE.line_memory_frames -= 1
+    _ESTIMATOR_STATE.line_memory_offset *= ESTIMATOR_PROFILE['line_startup_memory_value_decay']
+    _ESTIMATOR_STATE.line_memory_heading *= ESTIMATOR_PROFILE['line_startup_memory_value_decay']
+    _ESTIMATOR_STATE.line_memory_confidence *= ESTIMATOR_PROFILE['line_startup_memory_value_decay']
+    obs.line_offset = _ESTIMATOR_STATE.line_memory_offset
+    obs.line_heading = _ESTIMATOR_STATE.line_memory_heading
+    obs.line_confidence = _ESTIMATOR_STATE.line_memory_confidence
     remembered_trust = _line_target_trust(obs, timestamp, red_environment)
     return clamp(remembered_trust * ESTIMATOR_PROFILE['line_startup_memory_trust_scale'], 0.0, 1.0)
 
@@ -889,7 +889,7 @@ def _line_only_track(obs, timestamp, red_environment, line_trust):
     heading_error = clamp(line_heading * line_trust, -1.0, 1.0)
     lookahead_error = clamp(projected_lookahead * line_trust, -1.0, 1.0)
     alpha = _smooth_alpha(confidence)
-    track = TrackState(_smooth_limited(_STATE.last_track.lateral_error, lateral_error, alpha, ESTIMATOR_PROFILE['max_error_delta']), _smooth_limited(_STATE.last_track.heading_error, heading_error, alpha, ESTIMATOR_PROFILE['max_heading_delta']), _smooth_limited(_STATE.last_track.curvature, 0.0, ESTIMATOR_PROFILE['curve_smooth_alpha'], ESTIMATOR_PROFILE['max_curvature_delta']), _smooth_limited(_STATE.last_track.lookahead_error, lookahead_error, alpha, ESTIMATOR_PROFILE['max_error_delta']), confidence, False, red_environment, clamp(float(obs.line_offset), -1.0, 1.0), clamp(float(obs.line_heading), -1.0, 1.0), clamp(float(obs.line_confidence), 0.0, 1.0), _STATE.last_track.left_margin_near, _STATE.last_track.right_margin_near, bool(obs.near_obstacle), clamp(float(obs.obstacle_x), -1.0, 1.0), max(float(obs.obstacle_size), 0.0), obs.frame_motion)
+    track = TrackState(_smooth_limited(_ESTIMATOR_STATE.last_track.lateral_error, lateral_error, alpha, ESTIMATOR_PROFILE['max_error_delta']), _smooth_limited(_ESTIMATOR_STATE.last_track.heading_error, heading_error, alpha, ESTIMATOR_PROFILE['max_heading_delta']), _smooth_limited(_ESTIMATOR_STATE.last_track.curvature, 0.0, ESTIMATOR_PROFILE['curve_smooth_alpha'], ESTIMATOR_PROFILE['max_curvature_delta']), _smooth_limited(_ESTIMATOR_STATE.last_track.lookahead_error, lookahead_error, alpha, ESTIMATOR_PROFILE['max_error_delta']), confidence, False, red_environment, clamp(float(obs.line_offset), -1.0, 1.0), clamp(float(obs.line_heading), -1.0, 1.0), clamp(float(obs.line_confidence), 0.0, 1.0), _ESTIMATOR_STATE.last_track.left_margin_near, _ESTIMATOR_STATE.last_track.right_margin_near, bool(obs.near_obstacle), clamp(float(obs.obstacle_x), -1.0, 1.0), max(float(obs.obstacle_size), 0.0), obs.frame_motion)
     return track
 
 def _fit_centerline(progress, x_norm):
@@ -948,25 +948,25 @@ def _smooth_limited(previous, current, alpha, max_delta):
     return clamp(previous + delta, -1.0, 1.0)
 
 def reset_estimator_state():
-    global _STATE
-    _STATE = EstimatorState()
+    global _ESTIMATOR_STATE
+    _ESTIMATOR_STATE = EstimatorState()
 
 def _maybe_reset_estimator_by_timestamp(timestamp):
-    if _STATE.last_timestamp is None:
+    if _ESTIMATOR_STATE.last_timestamp is None:
         return
-    elapsed = float(timestamp) - float(_STATE.last_timestamp)
+    elapsed = float(timestamp) - float(_ESTIMATOR_STATE.last_timestamp)
     if elapsed < 0.0 or elapsed > ESTIMATOR_PROFILE['timestamp_reset_gap']:
         reset_estimator_state()
 
 def _red_environment(obs):
     observed = bool(obs.debug_flags & _RED_ENVIRONMENT_FLAG)
     if observed:
-        _STATE.red_environment_streak += 1
-    elif not _STATE.last_red_environment:
-        _STATE.red_environment_streak = 0
-    if _STATE.red_environment_streak >= _RED_ENVIRONMENT_LATCH_FRAMES:
-        _STATE.last_red_environment = True
-    return observed or _STATE.last_red_environment
+        _ESTIMATOR_STATE.red_environment_streak += 1
+    elif not _ESTIMATOR_STATE.last_red_environment:
+        _ESTIMATOR_STATE.red_environment_streak = 0
+    if _ESTIMATOR_STATE.red_environment_streak >= _RED_ENVIRONMENT_LATCH_FRAMES:
+        _ESTIMATOR_STATE.last_red_environment = True
+    return observed or _ESTIMATOR_STATE.last_red_environment
 
 def _measure_geometry(obs, line_trust, red_environment):
     points = _clean_points(obs.center_points)
@@ -992,7 +992,7 @@ def _measure_geometry(obs, line_trust, red_environment):
 def _smoothed_track(obs, geometry, red_environment):
     alpha = _smooth_alpha(geometry.confidence)
     curve_alpha = clamp(ESTIMATOR_PROFILE['curve_smooth_alpha'] + ESTIMATOR_PROFILE['low_conf_extra_smoothing'] * (1.0 - geometry.confidence), ESTIMATOR_PROFILE['min_smooth_alpha'], ESTIMATOR_PROFILE['max_smooth_alpha'])
-    return TrackState(_smooth_limited(_STATE.last_track.lateral_error, geometry.lateral_error, alpha, ESTIMATOR_PROFILE['max_error_delta']), _smooth_limited(_STATE.last_track.heading_error, geometry.heading_error, alpha, ESTIMATOR_PROFILE['max_heading_delta']), _smooth_limited(_STATE.last_track.curvature, geometry.curvature, curve_alpha, ESTIMATOR_PROFILE['max_curvature_delta']), _smooth_limited(_STATE.last_track.lookahead_error, geometry.lookahead_error, alpha, ESTIMATOR_PROFILE['max_error_delta']), geometry.confidence, False, red_environment, clamp(float(obs.line_offset), -1.0, 1.0), clamp(float(obs.line_heading), -1.0, 1.0), clamp(float(obs.line_confidence), 0.0, 1.0), geometry.left_margin_near, geometry.right_margin_near, bool(obs.near_obstacle), clamp(float(obs.obstacle_x), -1.0, 1.0), max(float(obs.obstacle_size), 0.0), obs.frame_motion)
+    return TrackState(_smooth_limited(_ESTIMATOR_STATE.last_track.lateral_error, geometry.lateral_error, alpha, ESTIMATOR_PROFILE['max_error_delta']), _smooth_limited(_ESTIMATOR_STATE.last_track.heading_error, geometry.heading_error, alpha, ESTIMATOR_PROFILE['max_heading_delta']), _smooth_limited(_ESTIMATOR_STATE.last_track.curvature, geometry.curvature, curve_alpha, ESTIMATOR_PROFILE['max_curvature_delta']), _smooth_limited(_ESTIMATOR_STATE.last_track.lookahead_error, geometry.lookahead_error, alpha, ESTIMATOR_PROFILE['max_error_delta']), geometry.confidence, False, red_environment, clamp(float(obs.line_offset), -1.0, 1.0), clamp(float(obs.line_heading), -1.0, 1.0), clamp(float(obs.line_confidence), 0.0, 1.0), geometry.left_margin_near, geometry.right_margin_near, bool(obs.near_obstacle), clamp(float(obs.obstacle_x), -1.0, 1.0), max(float(obs.obstacle_size), 0.0), obs.frame_motion)
 
 def estimate_track(obs, timestamp):
     timestamp = float(timestamp)
@@ -1003,17 +1003,17 @@ def estimate_track(obs, timestamp):
     (geometry, line_only_allowed) = _measure_geometry(obs, line_trust, red_environment)
     if geometry is None:
         track = _line_only_track(obs, timestamp, red_environment, line_trust) if line_only_allowed and line_trust > 0.0 else _lost_track(obs.confidence, red_environment, obs)
-        _STATE.last_track = track
-        _STATE.last_timestamp = timestamp
+        _ESTIMATOR_STATE.last_track = track
+        _ESTIMATOR_STATE.last_timestamp = timestamp
         return track
     if geometry.confidence < ESTIMATOR_PROFILE['lost_confidence']:
         track = _lost_track(geometry.confidence, red_environment, obs)
-        _STATE.last_track = track
-        _STATE.last_timestamp = timestamp
+        _ESTIMATOR_STATE.last_track = track
+        _ESTIMATOR_STATE.last_timestamp = timestamp
         return track
     track = _smoothed_track(obs, geometry, red_environment)
-    _STATE.last_track = track
-    _STATE.last_timestamp = timestamp
+    _ESTIMATOR_STATE.last_track = track
+    _ESTIMATOR_STATE.last_timestamp = timestamp
     return track
 
 @dataclass
@@ -1068,26 +1068,26 @@ class EscapePlan:
     steering_sign: float
     reverse_frames: int = 0
     require_confidence: bool = True
-_STATE = PolicyState()
+_POLICY_STATE = PolicyState()
 
 def reset_policy_state():
-    global _STATE
-    _STATE = PolicyState()
+    global _POLICY_STATE
+    _POLICY_STATE = PolicyState()
 
 def get_policy_diagnostics():
-    return {'mode': _STATE.last_mode, 'mode_reason': _STATE.last_mode_reason, 'line_correction': _STATE.line_correction, 'target_steering': _STATE.last_target_steering, 'target_speed': _STATE.last_target_speed, 'signals': dict(_STATE.last_signals or {}), 'force_escape_active': _STATE.force_escape_active}
+    return {'mode': _POLICY_STATE.last_mode, 'mode_reason': _POLICY_STATE.last_mode_reason, 'line_correction': _POLICY_STATE.line_correction, 'target_steering': _POLICY_STATE.last_target_steering, 'target_speed': _POLICY_STATE.last_target_speed, 'signals': dict(_POLICY_STATE.last_signals or {}), 'force_escape_active': _POLICY_STATE.force_escape_active}
 
 def _maybe_reset_policy_by_timestamp(timestamp, profile):
-    if _STATE.last_timestamp is None:
+    if _POLICY_STATE.last_timestamp is None:
         return
-    elapsed = float(timestamp) - float(_STATE.last_timestamp)
+    elapsed = float(timestamp) - float(_POLICY_STATE.last_timestamp)
     if elapsed < 0.0 or elapsed > profile['timestamp_reset_gap']:
         reset_policy_state()
 
 def _dt(timestamp, profile):
-    if _STATE.last_timestamp is None:
+    if _POLICY_STATE.last_timestamp is None:
         return profile['nominal_dt']
-    return max(float(timestamp) - float(_STATE.last_timestamp), profile['nominal_dt'])
+    return max(float(timestamp) - float(_POLICY_STATE.last_timestamp), profile['nominal_dt'])
 
 def _signed_power(value, power):
     return math.copysign(abs(value) ** power, value)
@@ -1095,9 +1095,9 @@ def _signed_power(value, power):
 def _road_direction_sign(track):
     reference = track.lateral_error
     if abs(reference) <= 0.05:
-        reference = _STATE.last_good_bias
+        reference = _POLICY_STATE.last_good_bias
     if abs(reference) <= 0.001:
-        reference = -_STATE.last_steering
+        reference = -_POLICY_STATE.last_steering
     if abs(reference) <= 1e-06:
         return 1.0
     return math.copysign(1.0, reference)
@@ -1142,49 +1142,49 @@ def _is_lost_straight_coast_candidate(track, signals, profile):
     stable_curve = max(abs(track.curvature), abs(track.lookahead_error)) <= profile['straight_curve_max']
     centered = signals['offset_risk'] <= profile['straight_offset_max']
     heading_ok = abs(track.heading_error) <= profile['straight_heading_max']
-    steering_ok = abs(_STATE.last_steering) <= profile['straight_lost_steering_max']
+    steering_ok = abs(_POLICY_STATE.last_steering) <= profile['straight_lost_steering_max']
     return stable_curve and centered and heading_ok and steering_ok
 
 def _update_straight_memory(track, signals, mode, profile):
     if _is_straight_candidate(track, signals, profile):
-        _STATE.straight_memory_frames = int(profile['straight_memory_frames'])
+        _POLICY_STATE.straight_memory_frames = int(profile['straight_memory_frames'])
         return True
-    if _STATE.straight_memory_frames > 0 and mode == 'lost':
-        _STATE.straight_memory_frames -= 1
+    if _POLICY_STATE.straight_memory_frames > 0 and mode == 'lost':
+        _POLICY_STATE.straight_memory_frames -= 1
         return True
     if _is_lost_straight_coast_candidate(track, signals, profile):
         return True
-    _STATE.straight_memory_frames = 0
+    _POLICY_STATE.straight_memory_frames = 0
     return False
 
 def _select_mode(track, signals, timestamp, profile):
     del timestamp
     if track.lost or track.confidence < profile['lost_confidence']:
-        _STATE.hard_turn_candidate_frames = 0
-        _STATE.recovery_candidate_frames = 0
-        _STATE.last_mode_reason = 'lost_or_low_confidence'
+        _POLICY_STATE.hard_turn_candidate_frames = 0
+        _POLICY_STATE.recovery_candidate_frames = 0
+        _POLICY_STATE.last_mode_reason = 'lost_or_low_confidence'
         return 'lost'
-    if _STATE.recovery_frames > 0 or track.confidence < profile['recovery_confidence']:
-        _STATE.recovery_candidate_frames += 1
-        _STATE.hard_turn_candidate_frames = 0
-        if _STATE.recovery_frames > 0 or _STATE.recovery_candidate_frames >= int(profile['recovery_enter_frames']):
-            _STATE.last_mode_reason = 'recovery_buffer_or_confidence'
+    if _POLICY_STATE.recovery_frames > 0 or track.confidence < profile['recovery_confidence']:
+        _POLICY_STATE.recovery_candidate_frames += 1
+        _POLICY_STATE.hard_turn_candidate_frames = 0
+        if _POLICY_STATE.recovery_frames > 0 or _POLICY_STATE.recovery_candidate_frames >= int(profile['recovery_enter_frames']):
+            _POLICY_STATE.last_mode_reason = 'recovery_buffer_or_confidence'
             return 'recovering'
     else:
-        _STATE.recovery_candidate_frames = 0
+        _POLICY_STATE.recovery_candidate_frames = 0
     hard_turn_candidate = signals['curve_risk'] > profile['hard_turn_threshold'] or signals['turn_demand'] > profile['hard_turn_threshold']
-    hard_turn_hold = _STATE.last_mode == 'hard_turn' and (signals['curve_risk'] > profile['hard_turn_exit_threshold'] or signals['turn_demand'] > profile['hard_turn_exit_threshold'])
+    hard_turn_hold = _POLICY_STATE.last_mode == 'hard_turn' and (signals['curve_risk'] > profile['hard_turn_exit_threshold'] or signals['turn_demand'] > profile['hard_turn_exit_threshold'])
     if hard_turn_candidate or hard_turn_hold:
-        _STATE.hard_turn_candidate_frames += 1
+        _POLICY_STATE.hard_turn_candidate_frames += 1
     else:
-        _STATE.hard_turn_candidate_frames = 0
-    if hard_turn_hold or _STATE.hard_turn_candidate_frames >= int(profile['hard_turn_enter_frames']):
-        _STATE.last_mode_reason = 'curve_or_turn_demand'
+        _POLICY_STATE.hard_turn_candidate_frames = 0
+    if hard_turn_hold or _POLICY_STATE.hard_turn_candidate_frames >= int(profile['hard_turn_enter_frames']):
+        _POLICY_STATE.last_mode_reason = 'curve_or_turn_demand'
         return 'hard_turn'
     if abs(track.lateral_error) > profile['correction_error']:
-        _STATE.last_mode_reason = 'lateral_error'
+        _POLICY_STATE.last_mode_reason = 'lateral_error'
         return 'correcting'
-    _STATE.last_mode_reason = 'nominal'
+    _POLICY_STATE.last_mode_reason = 'nominal'
     return 'cruise'
 
 def _apply_inside_margin_guard(raw, track, profile):
@@ -1204,24 +1204,24 @@ def _apply_inside_margin_guard(raw, track, profile):
     return raw
 
 def _turn_arrival(track, mode, profile):
-    speed_norm = clamp(_STATE.last_speed / max(profile['max_speed'], 1e-06), 0.0, 1.0)
+    speed_norm = clamp(_POLICY_STATE.last_speed / max(profile['max_speed'], 1e-06), 0.0, 1.0)
     arrival_ref = max(profile['turn_in_lateral_ref'] * (1.0 - profile['turn_in_speed_comp'] * speed_norm), 0.001)
     instant_arrival = clamp(abs(track.lateral_error) / arrival_ref, 0.0, 1.0)
     if mode == 'hard_turn':
-        _STATE.turn_in_latch = max(instant_arrival, _STATE.turn_in_latch)
+        _POLICY_STATE.turn_in_latch = max(instant_arrival, _POLICY_STATE.turn_in_latch)
     else:
-        _STATE.turn_in_latch = max(instant_arrival, _STATE.turn_in_latch * profile['turn_in_hold_decay'])
-    return _STATE.turn_in_latch
+        _POLICY_STATE.turn_in_latch = max(instant_arrival, _POLICY_STATE.turn_in_latch * profile['turn_in_hold_decay'])
+    return _POLICY_STATE.turn_in_latch
 
 def _relieve_inside_corner(lookahead_term, track, mode, profile):
     instant_relief = 0.0
     if profile.get('corner_relief_enable') and track.red_environment and (mode == 'hard_turn') and (track.line_confidence >= profile['corner_relief_conf_min']) and (abs(track.line_offset) >= profile['corner_relief_offset_min']) and (track.line_offset * lookahead_term < 0.0):
         instant_relief = clamp((abs(track.line_offset) - profile['corner_relief_offset_min']) * profile['corner_relief_gain'], 0.0, profile['corner_relief_max']) * clamp(track.line_confidence, 0.0, 1.0)
     if profile.get('corner_relief_enable') and track.red_environment and (mode == 'hard_turn'):
-        _STATE.corner_relief = max(instant_relief, _STATE.corner_relief * profile['corner_relief_hold_decay'])
+        _POLICY_STATE.corner_relief = max(instant_relief, _POLICY_STATE.corner_relief * profile['corner_relief_hold_decay'])
     else:
-        _STATE.corner_relief = 0.0
-    return lookahead_term * (1.0 - _STATE.corner_relief)
+        _POLICY_STATE.corner_relief = 0.0
+    return lookahead_term * (1.0 - _POLICY_STATE.corner_relief)
 
 def _blend_steering_terms(center_term, lookahead_term, track, signals, profile):
     near_weight = profile['near_weight_base'] + signals['offset_risk'] * profile['near_weight_offset_boost']
@@ -1236,7 +1236,7 @@ def _blend_steering_terms(center_term, lookahead_term, track, signals, profile):
 
 def _apply_mode_steering(raw, track, mode, profile):
     if mode == 'lost':
-        raw = 0.5 * _STATE.last_steering + 0.2 * _STATE.last_good_bias
+        raw = 0.5 * _POLICY_STATE.last_steering + 0.2 * _POLICY_STATE.last_good_bias
     elif mode == 'recovering':
         raw *= 0.7
     elif mode == 'correcting':
@@ -1270,14 +1270,14 @@ def _steering_smoothing_for_mode(mode, profile):
 
 def _smooth_steering(target, mode, timestamp, profile):
     alpha = _steering_smoothing_for_mode(mode, profile)
-    smoothed = _STATE.last_steering * alpha + target * (1.0 - alpha)
+    smoothed = _POLICY_STATE.last_steering * alpha + target * (1.0 - alpha)
     dt_factor = max(1.0, _dt(timestamp, profile) / profile['nominal_dt'])
-    speed_norm = clamp(_STATE.last_speed / max(profile['max_speed'], 1e-06), 0.0, 1.0)
+    speed_norm = clamp(_POLICY_STATE.last_speed / max(profile['max_speed'], 1e-06), 0.0, 1.0)
     speed_factor = 1.0 - 0.35 * speed_norm
     max_delta = profile['max_steering_delta'] * dt_factor * speed_factor
-    delta = clamp(smoothed - _STATE.last_steering, -max_delta, max_delta)
+    delta = clamp(smoothed - _POLICY_STATE.last_steering, -max_delta, max_delta)
     max_abs = profile['max_abs_steering'] * (1.0 - profile['steering_speed_cap_scale'] * speed_norm)
-    return clamp(_STATE.last_steering + delta, -max_abs, max_abs)
+    return clamp(_POLICY_STATE.last_steering + delta, -max_abs, max_abs)
 
 def _target_speed(track, signals, mode, steering, timestamp, profile, straight_memory_active=False):
     if mode == 'lost':
@@ -1314,39 +1314,39 @@ def _target_speed(track, signals, mode, steering, timestamp, profile, straight_m
 
 def _smooth_speed(target, timestamp, profile):
     dt = _dt(timestamp, profile)
-    delta = target - _STATE.last_speed
+    delta = target - _POLICY_STATE.last_speed
     if delta >= 0.0:
         delta = min(delta, profile['max_speed_increase_per_sec'] * dt)
     else:
         delta = max(delta, -profile['max_speed_decrease_per_sec'] * dt)
-    return clamp(_STATE.last_speed + delta, min(profile['min_speed'], target), profile['max_speed'])
+    return clamp(_POLICY_STATE.last_speed + delta, min(profile['min_speed'], target), profile['max_speed'])
 
 def _track_signature(track):
     return (track.lateral_error, track.heading_error, track.curvature, track.lookahead_error, track.confidence)
 
 def _track_signature_delta(track):
     signature = _track_signature(track)
-    if _STATE.last_track_signature is None:
+    if _POLICY_STATE.last_track_signature is None:
         delta = 1.0
     else:
-        delta = sum((abs(current - previous) for (current, previous) in zip(signature, _STATE.last_track_signature)))
-    _STATE.last_track_signature = signature
+        delta = sum((abs(current - previous) for (current, previous) in zip(signature, _POLICY_STATE.last_track_signature)))
+    _POLICY_STATE.last_track_signature = signature
     return delta
 
 def _continue_local_escape(speed, profile):
-    if _STATE.escape_frames <= 0:
+    if _POLICY_STATE.escape_frames <= 0:
         return None
-    _STATE.escape_frames -= 1
-    wiggle = 1.0 if _STATE.escape_frames // 10 % 2 == 0 else -1.0
+    _POLICY_STATE.escape_frames -= 1
+    wiggle = 1.0 if _POLICY_STATE.escape_frames // 10 % 2 == 0 else -1.0
     wiggle_amplitude = float(profile.get('escape_wiggle_amplitude', 0.2))
-    elapsed = _STATE.escape_total_frames - _STATE.escape_frames
-    if elapsed <= _STATE.escape_reverse_frames:
-        phase_sign = -_STATE.escape_steering_sign
+    elapsed = _POLICY_STATE.escape_total_frames - _POLICY_STATE.escape_frames
+    if elapsed <= _POLICY_STATE.escape_reverse_frames:
+        phase_sign = -_POLICY_STATE.escape_steering_sign
         speed_out = -float(profile.get('escape_reverse_speed', 0.4))
     else:
-        phase_sign = _STATE.escape_steering_sign
-        speed_out = max(speed, _STATE.escape_speed)
-    steering = phase_sign * (_STATE.escape_steering_magnitude + wiggle * wiggle_amplitude)
+        phase_sign = _POLICY_STATE.escape_steering_sign
+        speed_out = max(speed, _POLICY_STATE.escape_speed)
+    steering = phase_sign * (_POLICY_STATE.escape_steering_magnitude + wiggle * wiggle_amplitude)
     return (clamp(steering, -profile['max_abs_steering'], profile['max_abs_steering']), speed_out, 'escaping')
 
 def _escape_plan(track, signals, steering, speed, mode, profile, allow_geometry_escape):
@@ -1371,13 +1371,13 @@ def _escape_plan(track, signals, steering, speed, mode, profile, allow_geometry_
     return None
 
 def _start_local_escape(plan):
-    _STATE.stall_frames = 0
-    _STATE.escape_steering_sign = plan.steering_sign
-    _STATE.escape_steering_magnitude = plan.steering
-    _STATE.escape_speed = plan.speed
-    _STATE.escape_frames = plan.duration_frames
-    _STATE.escape_total_frames = plan.duration_frames
-    _STATE.escape_reverse_frames = min(plan.reverse_frames, plan.duration_frames // 2)
+    _POLICY_STATE.stall_frames = 0
+    _POLICY_STATE.escape_steering_sign = plan.steering_sign
+    _POLICY_STATE.escape_steering_magnitude = plan.steering
+    _POLICY_STATE.escape_speed = plan.speed
+    _POLICY_STATE.escape_frames = plan.duration_frames
+    _POLICY_STATE.escape_total_frames = plan.duration_frames
+    _POLICY_STATE.escape_reverse_frames = min(plan.reverse_frames, plan.duration_frames // 2)
 
 def _escape_if_stalled(track, signals, steering, speed, mode, profile, allow_geometry_escape):
     signature_delta = _track_signature_delta(track)
@@ -1388,10 +1388,10 @@ def _escape_if_stalled(track, signals, steering, speed, mode, profile, allow_geo
     confidence_ok = plan is not None and (not plan.require_confidence or (not track.lost and track.confidence >= profile['escape_min_confidence']))
     stable_view = signature_delta <= profile['escape_signature_delta']
     if plan is not None and stable_view and confidence_ok:
-        _STATE.stall_frames += 1
+        _POLICY_STATE.stall_frames += 1
     else:
-        _STATE.stall_frames = 0
-    if plan is not None and _STATE.stall_frames >= plan.trigger_frames:
+        _POLICY_STATE.stall_frames = 0
+    if plan is not None and _POLICY_STATE.stall_frames >= plan.trigger_frames:
         _start_local_escape(plan)
     return (steering, speed, mode)
 
@@ -1399,14 +1399,14 @@ def _line_validity(track, mode, profile, timestamp):
     normal_valid = profile['enable'] and track.line_confidence >= profile['min_confidence'] and (abs(track.line_offset) <= profile['offset_trust_max']) and (not track.near_obstacle) and (mode != 'escaping')
     startup_valid = profile['enable'] and track.red_environment and (timestamp <= profile['startup_acquire_until']) and (track.line_confidence >= profile['min_confidence']) and (profile['startup_offset_min'] <= track.line_offset <= profile['startup_offset_trust_max']) and (profile['startup_heading_min'] <= track.line_heading <= profile['startup_heading_max']) and (not track.near_obstacle) and (mode != 'escaping')
     valid = normal_valid or startup_valid
-    if valid and _STATE.line_streak > 0 and (abs(track.line_offset - _STATE.line_last_offset) > profile['offset_jump_max']):
+    if valid and _POLICY_STATE.line_streak > 0 and (abs(track.line_offset - _POLICY_STATE.line_last_offset) > profile['offset_jump_max']):
         valid = False
-        _STATE.line_streak = 0
+        _POLICY_STATE.line_streak = 0
     if valid:
-        _STATE.line_streak += 1
-        _STATE.line_last_offset = track.line_offset
+        _POLICY_STATE.line_streak += 1
+        _POLICY_STATE.line_last_offset = track.line_offset
     else:
-        _STATE.line_streak = 0
+        _POLICY_STATE.line_streak = 0
     return (normal_valid, startup_valid, valid)
 
 def _line_target(track, signals, mode, profile, startup_only):
@@ -1421,7 +1421,7 @@ def _line_target(track, signals, mode, profile, startup_only):
         offset_floor = clamp(offset_target * profile['offset_curve_min_scale'], -max_correction, max_correction)
         if offset_floor * target <= 0.0 or abs(offset_floor) > abs(target):
             target = offset_floor
-    if profile['inside_assist_enable'] and track.red_environment and (mode in {'hard_turn', 'correcting'}) and (_STATE.line_streak >= int(profile['inside_assist_streak_min'])) and (abs(track.line_offset) >= profile['inside_assist_offset_min']) and opposing_heading:
+    if profile['inside_assist_enable'] and track.red_environment and (mode in {'hard_turn', 'correcting'}) and (_POLICY_STATE.line_streak >= int(profile['inside_assist_streak_min'])) and (abs(track.line_offset) >= profile['inside_assist_offset_min']) and opposing_heading:
         excess = abs(track.line_offset) - profile['inside_assist_offset_min']
         assist = math.copysign(clamp(excess * profile['inside_assist_gain'], 0.0, profile['inside_assist_max']), track.line_offset)
         if assist * target >= 0.0:
@@ -1431,13 +1431,13 @@ def _line_target(track, signals, mode, profile, startup_only):
 def _line_hold_correction(active, mode, profile):
     turn_mode = mode in {'hard_turn', 'correcting'}
     if active:
-        _STATE.line_hold_frames = int(profile['hold_frames']) if turn_mode and abs(_STATE.line_last_offset) >= profile['hold_offset_min'] else 0
+        _POLICY_STATE.line_hold_frames = int(profile['hold_frames']) if turn_mode and abs(_POLICY_STATE.line_last_offset) >= profile['hold_offset_min'] else 0
         return None
-    if _STATE.line_hold_frames > 0 and turn_mode:
-        _STATE.line_hold_frames -= 1
-        _STATE.line_correction *= profile['hold_decay']
-        return clamp(_STATE.line_correction, -profile['max_correction'], profile['max_correction'])
-    _STATE.line_hold_frames = 0
+    if _POLICY_STATE.line_hold_frames > 0 and turn_mode:
+        _POLICY_STATE.line_hold_frames -= 1
+        _POLICY_STATE.line_correction *= profile['hold_decay']
+        return clamp(_POLICY_STATE.line_correction, -profile['max_correction'], profile['max_correction'])
+    _POLICY_STATE.line_hold_frames = 0
     return None
 
 def _lane_line_correction(track, signals, mode, profile, timestamp):
@@ -1445,7 +1445,7 @@ def _lane_line_correction(track, signals, mode, profile, timestamp):
     target = 0.0
     startup_only = startup_valid and (not normal_valid)
     confirm_frames = int(profile['startup_confirm_frames'] if startup_only else profile['confirm_frames'])
-    active = valid and _STATE.line_streak >= confirm_frames
+    active = valid and _POLICY_STATE.line_streak >= confirm_frames
     if active:
         target = _line_target(track, signals, mode, profile, startup_only)
     held = _line_hold_correction(active, mode, profile)
@@ -1453,82 +1453,82 @@ def _lane_line_correction(track, signals, mode, profile, timestamp):
         return held
     if startup_only:
         alpha = profile['startup_smoothing']
-    elif not valid and timestamp <= profile['startup_acquire_until'] and (_STATE.line_correction > 0.0):
+    elif not valid and timestamp <= profile['startup_acquire_until'] and (_POLICY_STATE.line_correction > 0.0):
         alpha = profile['startup_decay']
     else:
         alpha = profile['smoothing']
-    _STATE.line_correction = _STATE.line_correction * alpha + target * (1.0 - alpha)
-    return clamp(_STATE.line_correction, -profile['max_correction'], profile['max_correction'])
+    _POLICY_STATE.line_correction = _POLICY_STATE.line_correction * alpha + target * (1.0 - alpha)
+    return clamp(_POLICY_STATE.line_correction, -profile['max_correction'], profile['max_correction'])
 
 def _update_policy_state(track, steering, speed, mode, timestamp, profile):
     if track.lost:
-        _STATE.lost_frames += 1
+        _POLICY_STATE.lost_frames += 1
     else:
-        if _STATE.lost_frames > 0:
-            _STATE.recovery_frames = int(profile['recovery_frames'])
-        _STATE.lost_frames = 0
-    if _STATE.recovery_frames > 0 and (not track.lost):
-        _STATE.recovery_frames -= 1
+        if _POLICY_STATE.lost_frames > 0:
+            _POLICY_STATE.recovery_frames = int(profile['recovery_frames'])
+        _POLICY_STATE.lost_frames = 0
+    if _POLICY_STATE.recovery_frames > 0 and (not track.lost):
+        _POLICY_STATE.recovery_frames -= 1
     if not track.lost and track.confidence >= profile['recovery_confidence']:
-        _STATE.last_good_bias = clamp(track.lateral_error * 0.55 + track.lookahead_error * 0.25 + track.curvature * 0.2, -1.0, 1.0)
-    _STATE.last_steering = steering
-    _STATE.last_speed = speed
-    _STATE.last_timestamp = timestamp
-    _STATE.last_mode = mode
+        _POLICY_STATE.last_good_bias = clamp(track.lateral_error * 0.55 + track.lookahead_error * 0.25 + track.curvature * 0.2, -1.0, 1.0)
+    _POLICY_STATE.last_steering = steering
+    _POLICY_STATE.last_speed = speed
+    _POLICY_STATE.last_timestamp = timestamp
+    _POLICY_STATE.last_mode = mode
 
 def _continue_forced_escape(track, timestamp, profile):
-    if not _STATE.force_escape_active:
+    if not _POLICY_STATE.force_escape_active:
         return None
-    if _STATE.force_escape_frames <= 0:
-        _STATE.force_escape_active = False
-        _STATE.lost_streak = 0
+    if _POLICY_STATE.force_escape_frames <= 0:
+        _POLICY_STATE.force_escape_active = False
+        _POLICY_STATE.lost_streak = 0
         return None
-    _STATE.force_escape_frames -= 1
-    elapsed = _STATE.force_escape_total_frames - _STATE.force_escape_frames
-    steering = clamp(_STATE.force_escape_sign * _STATE.force_escape_steering, -1.0, 1.0)
-    if elapsed <= _STATE.force_escape_reverse_frames:
+    _POLICY_STATE.force_escape_frames -= 1
+    elapsed = _POLICY_STATE.force_escape_total_frames - _POLICY_STATE.force_escape_frames
+    steering = clamp(_POLICY_STATE.force_escape_sign * _POLICY_STATE.force_escape_steering, -1.0, 1.0)
+    if elapsed <= _POLICY_STATE.force_escape_reverse_frames:
         speed = -float(profile.get('force_reverse_back_speed', 0.42))
     else:
-        speed = _STATE.force_escape_speed
+        speed = _POLICY_STATE.force_escape_speed
     _update_policy_state(track, steering, speed, 'escaping', timestamp, profile)
     return ControlCmd(steering, speed)
 
 def _blockage_triggered(track, speed, drive_mode, profile):
     if track.lost:
-        _STATE.lost_streak += 1
-        _STATE.not_stuck_frames = 0
+        _POLICY_STATE.lost_streak += 1
+        _POLICY_STATE.not_stuck_frames = 0
     else:
-        _STATE.not_stuck_frames += 1
-        if _STATE.not_stuck_frames > 90:
-            _STATE.lost_streak = 0
-            _STATE.not_stuck_frames = 0
+        _POLICY_STATE.not_stuck_frames += 1
+        if _POLICY_STATE.not_stuck_frames > 90:
+            _POLICY_STATE.lost_streak = 0
+            _POLICY_STATE.not_stuck_frames = 0
     zero_speed_frames = int(profile.get('force_reverse_zero_speed_frames', 120))
     zero_speed_threshold = float(profile.get('force_reverse_zero_speed_threshold', 0.05))
     if speed <= zero_speed_threshold and drive_mode != 'escaping':
-        _STATE.zero_speed_streak += 1
+        _POLICY_STATE.zero_speed_streak += 1
     else:
-        _STATE.zero_speed_streak = 0
+        _POLICY_STATE.zero_speed_streak = 0
     motion_still_threshold = float(profile.get('motion_still_threshold', 2.5))
     motion_still_frames = int(profile.get('motion_still_frames', 40))
     motion_min_cmd_speed = float(profile.get('motion_still_min_cmd_speed', 0.35))
     if track.frame_motion < motion_still_threshold and speed >= motion_min_cmd_speed and (drive_mode != 'escaping'):
-        _STATE.motion_stall_streak += 1
+        _POLICY_STATE.motion_stall_streak += 1
     else:
-        _STATE.motion_stall_streak = 0
-    return _STATE.lost_streak >= int(profile.get('force_reverse_lost_streak', 45)) or _STATE.zero_speed_streak >= zero_speed_frames or _STATE.motion_stall_streak >= motion_still_frames
+        _POLICY_STATE.motion_stall_streak = 0
+    return _POLICY_STATE.lost_streak >= int(profile.get('force_reverse_lost_streak', 45)) or _POLICY_STATE.zero_speed_streak >= zero_speed_frames or _POLICY_STATE.motion_stall_streak >= motion_still_frames
 
 def _start_forced_escape(track, profile):
-    _STATE.force_escape_active = True
-    _STATE.force_escape_frames = int(profile.get('force_reverse_lost_frames', 120))
-    _STATE.force_escape_total_frames = _STATE.force_escape_frames
-    _STATE.force_escape_reverse_frames = min(int(profile.get('force_reverse_back_frames', 65)), int(_STATE.force_escape_frames * 0.6))
-    _STATE.force_escape_speed = float(profile.get('force_reverse_lost_speed', 0.35))
-    _STATE.force_escape_steering = float(profile.get('force_reverse_lost_steering', 0.88))
-    _STATE.force_escape_sign = _margin_escape_sign(track, _road_direction_sign(track))
-    _STATE.lost_streak = 0
-    _STATE.not_stuck_frames = 0
-    _STATE.zero_speed_streak = 0
-    _STATE.motion_stall_streak = 0
+    _POLICY_STATE.force_escape_active = True
+    _POLICY_STATE.force_escape_frames = int(profile.get('force_reverse_lost_frames', 120))
+    _POLICY_STATE.force_escape_total_frames = _POLICY_STATE.force_escape_frames
+    _POLICY_STATE.force_escape_reverse_frames = min(int(profile.get('force_reverse_back_frames', 65)), int(_POLICY_STATE.force_escape_frames * 0.6))
+    _POLICY_STATE.force_escape_speed = float(profile.get('force_reverse_lost_speed', 0.35))
+    _POLICY_STATE.force_escape_steering = float(profile.get('force_reverse_lost_steering', 0.88))
+    _POLICY_STATE.force_escape_sign = _margin_escape_sign(track, _road_direction_sign(track))
+    _POLICY_STATE.lost_streak = 0
+    _POLICY_STATE.not_stuck_frames = 0
+    _POLICY_STATE.zero_speed_streak = 0
+    _POLICY_STATE.motion_stall_streak = 0
 
 def _apply_opponent_avoidance(steering, track, profile):
     if not (profile.get('enable_opponent', True) and profile.get('opponent_avoid_steering_enable', True) and track.near_obstacle and (not track.lost) and (track.confidence >= 0.3)):
@@ -1556,19 +1556,19 @@ def decide_control(track, timestamp, mode='no_other_cars'):
     drive_mode = _select_mode(track, signals, timestamp, profile)
     straight_memory_active = _update_straight_memory(track, signals, drive_mode, profile)
     target_steering = _target_steering(track, signals, drive_mode, profile)
-    _STATE.last_target_steering = target_steering
+    _POLICY_STATE.last_target_steering = target_steering
     steering = _smooth_steering(target_steering, drive_mode, timestamp, profile)
     target_speed = _target_speed(track, signals, drive_mode, steering, timestamp, profile, straight_memory_active=straight_memory_active)
-    _STATE.last_target_speed = target_speed
-    _STATE.last_signals = dict(signals)
-    _STATE.last_straight_memory_active = bool(straight_memory_active)
+    _POLICY_STATE.last_target_speed = target_speed
+    _POLICY_STATE.last_signals = dict(signals)
+    _POLICY_STATE.last_straight_memory_active = bool(straight_memory_active)
     speed = _smooth_speed(target_speed, timestamp, profile)
     (steering, speed, drive_mode) = _escape_if_stalled(track, signals, steering, speed, drive_mode, profile, track.red_environment)
     _update_policy_state(track, steering, speed, drive_mode, timestamp, profile)
     line_correction = _lane_line_correction(track, signals, drive_mode, LINE_FOLLOW_PROFILE, timestamp)
     final_steering = clamp(steering + line_correction, -1.0, 1.0)
     blockage_triggered = _blockage_triggered(track, speed, drive_mode, profile)
-    if profile.get('enable_opponent', True) and blockage_triggered and (not _STATE.force_escape_active) and (timestamp > 3.0):
+    if profile.get('enable_opponent', True) and blockage_triggered and (not _POLICY_STATE.force_escape_active) and (timestamp > 3.0):
         _start_forced_escape(track, profile)
     final_steering = _apply_opponent_avoidance(final_steering, track, profile)
     return ControlCmd(final_steering, speed)

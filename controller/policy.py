@@ -66,36 +66,36 @@ class EscapePlan:
     require_confidence: bool = True
 
 
-_STATE = PolicyState()
+_POLICY_STATE = PolicyState()
 
 
 def reset_policy_state() -> None:
     """Replace the session state with a clean instance."""
 
-    global _STATE
-    _STATE = PolicyState()
+    global _POLICY_STATE
+    _POLICY_STATE = PolicyState()
 
 
 def get_policy_diagnostics() -> dict:
     """Return a read-only snapshot for tests, telemetry, and debugging."""
 
     return {
-        "mode": _STATE.last_mode,
-        "mode_reason": _STATE.last_mode_reason,
-        "line_correction": _STATE.line_correction,
-        "target_steering": _STATE.last_target_steering,
-        "target_speed": _STATE.last_target_speed,
-        "signals": dict(_STATE.last_signals or {}),
-        "force_escape_active": _STATE.force_escape_active,
+        "mode": _POLICY_STATE.last_mode,
+        "mode_reason": _POLICY_STATE.last_mode_reason,
+        "line_correction": _POLICY_STATE.line_correction,
+        "target_steering": _POLICY_STATE.last_target_steering,
+        "target_speed": _POLICY_STATE.last_target_speed,
+        "signals": dict(_POLICY_STATE.last_signals or {}),
+        "force_escape_active": _POLICY_STATE.force_escape_active,
     }
 
 
 def _maybe_reset_policy_by_timestamp(timestamp: float, profile: dict) -> None:
     """Reset policy memory after a timestamp rollback or a long input gap."""
 
-    if _STATE.last_timestamp is None:
+    if _POLICY_STATE.last_timestamp is None:
         return
-    elapsed = float(timestamp) - float(_STATE.last_timestamp)
+    elapsed = float(timestamp) - float(_POLICY_STATE.last_timestamp)
     if elapsed < 0.0 or elapsed > profile["timestamp_reset_gap"]:
         reset_policy_state()
 
@@ -103,9 +103,9 @@ def _maybe_reset_policy_by_timestamp(timestamp: float, profile: dict) -> None:
 def _dt(timestamp: float, profile: dict) -> float:
     """Return the control interval, using the nominal interval on the first frame."""
 
-    if _STATE.last_timestamp is None:
+    if _POLICY_STATE.last_timestamp is None:
         return profile["nominal_dt"]
-    return max(float(timestamp) - float(_STATE.last_timestamp), profile["nominal_dt"])
+    return max(float(timestamp) - float(_POLICY_STATE.last_timestamp), profile["nominal_dt"])
 
 
 def _signed_power(value: float, power: float) -> float:
@@ -119,9 +119,9 @@ def _road_direction_sign(track: TrackState) -> float:
 
     reference = track.lateral_error
     if abs(reference) <= 0.05:
-        reference = _STATE.last_good_bias
+        reference = _POLICY_STATE.last_good_bias
     if abs(reference) <= 1e-3:
-        reference = -_STATE.last_steering
+        reference = -_POLICY_STATE.last_steering
     if abs(reference) <= 1e-6:
         return 1.0
     return math.copysign(1.0, reference)
@@ -216,7 +216,7 @@ def _is_lost_straight_coast_candidate(
     )
     centered = signals["offset_risk"] <= profile["straight_offset_max"]
     heading_ok = abs(track.heading_error) <= profile["straight_heading_max"]
-    steering_ok = abs(_STATE.last_steering) <= profile["straight_lost_steering_max"]
+    steering_ok = abs(_POLICY_STATE.last_steering) <= profile["straight_lost_steering_max"]
     return stable_curve and centered and heading_ok and steering_ok
 
 
@@ -226,14 +226,14 @@ def _update_straight_memory(
     """Maintain a short straight-road memory across temporary visual dropout."""
 
     if _is_straight_candidate(track, signals, profile):
-        _STATE.straight_memory_frames = int(profile["straight_memory_frames"])
+        _POLICY_STATE.straight_memory_frames = int(profile["straight_memory_frames"])
         return True
-    if _STATE.straight_memory_frames > 0 and mode == "lost":
-        _STATE.straight_memory_frames -= 1
+    if _POLICY_STATE.straight_memory_frames > 0 and mode == "lost":
+        _POLICY_STATE.straight_memory_frames -= 1
         return True
     if _is_lost_straight_coast_candidate(track, signals, profile):
         return True
-    _STATE.straight_memory_frames = 0
+    _POLICY_STATE.straight_memory_frames = 0
     return False
 
 
@@ -244,42 +244,42 @@ def _select_mode(
 
     del timestamp
     if track.lost or track.confidence < profile["lost_confidence"]:
-        _STATE.hard_turn_candidate_frames = 0
-        _STATE.recovery_candidate_frames = 0
-        _STATE.last_mode_reason = "lost_or_low_confidence"
+        _POLICY_STATE.hard_turn_candidate_frames = 0
+        _POLICY_STATE.recovery_candidate_frames = 0
+        _POLICY_STATE.last_mode_reason = "lost_or_low_confidence"
         return "lost"
-    if _STATE.recovery_frames > 0 or track.confidence < profile["recovery_confidence"]:
-        _STATE.recovery_candidate_frames += 1
-        _STATE.hard_turn_candidate_frames = 0
-        if _STATE.recovery_frames > 0 or _STATE.recovery_candidate_frames >= int(
+    if _POLICY_STATE.recovery_frames > 0 or track.confidence < profile["recovery_confidence"]:
+        _POLICY_STATE.recovery_candidate_frames += 1
+        _POLICY_STATE.hard_turn_candidate_frames = 0
+        if _POLICY_STATE.recovery_frames > 0 or _POLICY_STATE.recovery_candidate_frames >= int(
             profile["recovery_enter_frames"]
         ):
-            _STATE.last_mode_reason = "recovery_buffer_or_confidence"
+            _POLICY_STATE.last_mode_reason = "recovery_buffer_or_confidence"
             return "recovering"
     else:
-        _STATE.recovery_candidate_frames = 0
+        _POLICY_STATE.recovery_candidate_frames = 0
 
     hard_turn_candidate = (
         signals["curve_risk"] > profile["hard_turn_threshold"]
         or signals["turn_demand"] > profile["hard_turn_threshold"]
     )
-    hard_turn_hold = _STATE.last_mode == "hard_turn" and (
+    hard_turn_hold = _POLICY_STATE.last_mode == "hard_turn" and (
         signals["curve_risk"] > profile["hard_turn_exit_threshold"]
         or signals["turn_demand"] > profile["hard_turn_exit_threshold"]
     )
     if hard_turn_candidate or hard_turn_hold:
-        _STATE.hard_turn_candidate_frames += 1
+        _POLICY_STATE.hard_turn_candidate_frames += 1
     else:
-        _STATE.hard_turn_candidate_frames = 0
-    if hard_turn_hold or _STATE.hard_turn_candidate_frames >= int(
+        _POLICY_STATE.hard_turn_candidate_frames = 0
+    if hard_turn_hold or _POLICY_STATE.hard_turn_candidate_frames >= int(
         profile["hard_turn_enter_frames"]
     ):
-        _STATE.last_mode_reason = "curve_or_turn_demand"
+        _POLICY_STATE.last_mode_reason = "curve_or_turn_demand"
         return "hard_turn"
     if abs(track.lateral_error) > profile["correction_error"]:
-        _STATE.last_mode_reason = "lateral_error"
+        _POLICY_STATE.last_mode_reason = "lateral_error"
         return "correcting"
-    _STATE.last_mode_reason = "nominal"
+    _POLICY_STATE.last_mode_reason = "nominal"
     return "cruise"
 
 
@@ -307,7 +307,7 @@ def _turn_arrival(track: TrackState, mode: str, profile: dict) -> float:
 
     # Lateral displacement is a better indication of physical corner arrival than
     # far-field heading, which rises while the vehicle is still on the approach.
-    speed_norm = clamp(_STATE.last_speed / max(profile["max_speed"], 1e-6), 0.0, 1.0)
+    speed_norm = clamp(_POLICY_STATE.last_speed / max(profile["max_speed"], 1e-6), 0.0, 1.0)
     arrival_ref = max(
         profile["turn_in_lateral_ref"]
         * (1.0 - profile["turn_in_speed_comp"] * speed_norm),
@@ -315,12 +315,12 @@ def _turn_arrival(track: TrackState, mode: str, profile: dict) -> float:
     )
     instant_arrival = clamp(abs(track.lateral_error) / arrival_ref, 0.0, 1.0)
     if mode == "hard_turn":
-        _STATE.turn_in_latch = max(instant_arrival, _STATE.turn_in_latch)
+        _POLICY_STATE.turn_in_latch = max(instant_arrival, _POLICY_STATE.turn_in_latch)
     else:
-        _STATE.turn_in_latch = max(
-            instant_arrival, _STATE.turn_in_latch * profile["turn_in_hold_decay"]
+        _POLICY_STATE.turn_in_latch = max(
+            instant_arrival, _POLICY_STATE.turn_in_latch * profile["turn_in_hold_decay"]
         )
-    return _STATE.turn_in_latch
+    return _POLICY_STATE.turn_in_latch
 
 
 def _relieve_inside_corner(
@@ -348,12 +348,12 @@ def _relieve_inside_corner(
         and track.red_environment
         and mode == "hard_turn"
     ):
-        _STATE.corner_relief = max(
-            instant_relief, _STATE.corner_relief * profile["corner_relief_hold_decay"]
+        _POLICY_STATE.corner_relief = max(
+            instant_relief, _POLICY_STATE.corner_relief * profile["corner_relief_hold_decay"]
         )
     else:
-        _STATE.corner_relief = 0.0
-    return lookahead_term * (1.0 - _STATE.corner_relief)
+        _POLICY_STATE.corner_relief = 0.0
+    return lookahead_term * (1.0 - _POLICY_STATE.corner_relief)
 
 
 def _blend_steering_terms(
@@ -393,7 +393,7 @@ def _apply_mode_steering(
     """Apply state-machine-specific steering behavior to the blended target."""
 
     if mode == "lost":
-        raw = 0.50 * _STATE.last_steering + 0.20 * _STATE.last_good_bias
+        raw = 0.50 * _POLICY_STATE.last_steering + 0.20 * _POLICY_STATE.last_good_bias
     elif mode == "recovering":
         raw *= 0.70
     elif mode == "correcting":
@@ -450,17 +450,17 @@ def _smooth_steering(
     """Smooth steering and apply speed-dependent rate and magnitude limits."""
 
     alpha = _steering_smoothing_for_mode(mode, profile)
-    smoothed = _STATE.last_steering * alpha + target * (1.0 - alpha)
+    smoothed = _POLICY_STATE.last_steering * alpha + target * (1.0 - alpha)
     dt_factor = max(1.0, _dt(timestamp, profile) / profile["nominal_dt"])
-    speed_norm = clamp(_STATE.last_speed / max(profile["max_speed"], 1e-6), 0.0, 1.0)
+    speed_norm = clamp(_POLICY_STATE.last_speed / max(profile["max_speed"], 1e-6), 0.0, 1.0)
     speed_factor = 1.0 - 0.35 * speed_norm
     max_delta = profile["max_steering_delta"] * dt_factor * speed_factor
-    delta = clamp(smoothed - _STATE.last_steering, -max_delta, max_delta)
+    delta = clamp(smoothed - _POLICY_STATE.last_steering, -max_delta, max_delta)
     # Reduce steering range at speed to avoid an overly tight corner radius.
     max_abs = profile["max_abs_steering"] * (
         1.0 - profile["steering_speed_cap_scale"] * speed_norm
     )
-    return clamp(_STATE.last_steering + delta, -max_abs, max_abs)
+    return clamp(_POLICY_STATE.last_steering + delta, -max_abs, max_abs)
 
 
 def _target_speed(
@@ -538,13 +538,13 @@ def _smooth_speed(target: float, timestamp: float, profile: dict) -> float:
     """Rate-limit speed with slower acceleration and faster braking."""
 
     dt = _dt(timestamp, profile)
-    delta = target - _STATE.last_speed
+    delta = target - _POLICY_STATE.last_speed
     if delta >= 0.0:
         delta = min(delta, profile["max_speed_increase_per_sec"] * dt)
     else:
         delta = max(delta, -profile["max_speed_decrease_per_sec"] * dt)
     return clamp(
-        _STATE.last_speed + delta,
+        _POLICY_STATE.last_speed + delta,
         min(profile["min_speed"], target),
         profile["max_speed"],
     )
@@ -566,14 +566,14 @@ def _track_signature_delta(track: TrackState) -> float:
     """Update the stored geometry signature and return frame-to-frame motion."""
 
     signature = _track_signature(track)
-    if _STATE.last_track_signature is None:
+    if _POLICY_STATE.last_track_signature is None:
         delta = 1.0
     else:
         delta = sum(
             abs(current - previous)
-            for current, previous in zip(signature, _STATE.last_track_signature)
+            for current, previous in zip(signature, _POLICY_STATE.last_track_signature)
         )
-    _STATE.last_track_signature = signature
+    _POLICY_STATE.last_track_signature = signature
     return delta
 
 
@@ -582,20 +582,20 @@ def _continue_local_escape(
 ) -> tuple[float, float, str] | None:
     """Advance an active local recovery maneuver."""
 
-    if _STATE.escape_frames <= 0:
+    if _POLICY_STATE.escape_frames <= 0:
         return None
-    _STATE.escape_frames -= 1
-    wiggle = 1.0 if (_STATE.escape_frames // 10) % 2 == 0 else -1.0
+    _POLICY_STATE.escape_frames -= 1
+    wiggle = 1.0 if (_POLICY_STATE.escape_frames // 10) % 2 == 0 else -1.0
     wiggle_amplitude = float(profile.get("escape_wiggle_amplitude", 0.20))
-    elapsed = _STATE.escape_total_frames - _STATE.escape_frames
-    if elapsed <= _STATE.escape_reverse_frames:
-        phase_sign = -_STATE.escape_steering_sign
+    elapsed = _POLICY_STATE.escape_total_frames - _POLICY_STATE.escape_frames
+    if elapsed <= _POLICY_STATE.escape_reverse_frames:
+        phase_sign = -_POLICY_STATE.escape_steering_sign
         speed_out = -float(profile.get("escape_reverse_speed", 0.40))
     else:
-        phase_sign = _STATE.escape_steering_sign
-        speed_out = max(speed, _STATE.escape_speed)
+        phase_sign = _POLICY_STATE.escape_steering_sign
+        speed_out = max(speed, _POLICY_STATE.escape_speed)
     steering = phase_sign * (
-        _STATE.escape_steering_magnitude + wiggle * wiggle_amplitude
+        _POLICY_STATE.escape_steering_magnitude + wiggle * wiggle_amplitude
     )
     return (
         clamp(steering, -profile["max_abs_steering"], profile["max_abs_steering"]),
@@ -709,13 +709,13 @@ def _escape_plan(
 def _start_local_escape(plan: EscapePlan) -> None:
     """Store a selected plan as the active local recovery maneuver."""
 
-    _STATE.stall_frames = 0
-    _STATE.escape_steering_sign = plan.steering_sign
-    _STATE.escape_steering_magnitude = plan.steering
-    _STATE.escape_speed = plan.speed
-    _STATE.escape_frames = plan.duration_frames
-    _STATE.escape_total_frames = plan.duration_frames
-    _STATE.escape_reverse_frames = min(plan.reverse_frames, plan.duration_frames // 2)
+    _POLICY_STATE.stall_frames = 0
+    _POLICY_STATE.escape_steering_sign = plan.steering_sign
+    _POLICY_STATE.escape_steering_magnitude = plan.steering
+    _POLICY_STATE.escape_speed = plan.speed
+    _POLICY_STATE.escape_frames = plan.duration_frames
+    _POLICY_STATE.escape_total_frames = plan.duration_frames
+    _POLICY_STATE.escape_reverse_frames = min(plan.reverse_frames, plan.duration_frames // 2)
 
 
 def _escape_if_stalled(
@@ -743,10 +743,10 @@ def _escape_if_stalled(
     )
     stable_view = signature_delta <= profile["escape_signature_delta"]
     if plan is not None and stable_view and confidence_ok:
-        _STATE.stall_frames += 1
+        _POLICY_STATE.stall_frames += 1
     else:
-        _STATE.stall_frames = 0
-    if plan is not None and _STATE.stall_frames >= plan.trigger_frames:
+        _POLICY_STATE.stall_frames = 0
+    if plan is not None and _POLICY_STATE.stall_frames >= plan.trigger_frames:
         _start_local_escape(plan)
     return steering, speed, mode
 
@@ -780,17 +780,17 @@ def _line_validity(
     valid = normal_valid or startup_valid
     if (
         valid
-        and _STATE.line_streak > 0
-        and abs(track.line_offset - _STATE.line_last_offset)
+        and _POLICY_STATE.line_streak > 0
+        and abs(track.line_offset - _POLICY_STATE.line_last_offset)
         > profile["offset_jump_max"]
     ):
         valid = False
-        _STATE.line_streak = 0
+        _POLICY_STATE.line_streak = 0
     if valid:
-        _STATE.line_streak += 1
-        _STATE.line_last_offset = track.line_offset
+        _POLICY_STATE.line_streak += 1
+        _POLICY_STATE.line_last_offset = track.line_offset
     else:
-        _STATE.line_streak = 0
+        _POLICY_STATE.line_streak = 0
     return normal_valid, startup_valid, valid
 
 
@@ -827,7 +827,7 @@ def _line_target(
         profile["inside_assist_enable"]
         and track.red_environment
         and mode in {"hard_turn", "correcting"}
-        and _STATE.line_streak >= int(profile["inside_assist_streak_min"])
+        and _POLICY_STATE.line_streak >= int(profile["inside_assist_streak_min"])
         and abs(track.line_offset) >= profile["inside_assist_offset_min"]
         and opposing_heading
     ):
@@ -850,21 +850,21 @@ def _line_hold_correction(active: bool, mode: str, profile: dict) -> float | Non
 
     turn_mode = mode in {"hard_turn", "correcting"}
     if active:
-        _STATE.line_hold_frames = (
+        _POLICY_STATE.line_hold_frames = (
             int(profile["hold_frames"])
-            if turn_mode and abs(_STATE.line_last_offset) >= profile["hold_offset_min"]
+            if turn_mode and abs(_POLICY_STATE.line_last_offset) >= profile["hold_offset_min"]
             else 0
         )
         return None
-    if _STATE.line_hold_frames > 0 and turn_mode:
-        _STATE.line_hold_frames -= 1
-        _STATE.line_correction *= profile["hold_decay"]
+    if _POLICY_STATE.line_hold_frames > 0 and turn_mode:
+        _POLICY_STATE.line_hold_frames -= 1
+        _POLICY_STATE.line_correction *= profile["hold_decay"]
         return clamp(
-            _STATE.line_correction,
+            _POLICY_STATE.line_correction,
             -profile["max_correction"],
             profile["max_correction"],
         )
-    _STATE.line_hold_frames = 0
+    _POLICY_STATE.line_hold_frames = 0
     return None
 
 
@@ -884,7 +884,7 @@ def _lane_line_correction(
     confirm_frames = int(
         profile["startup_confirm_frames"] if startup_only else profile["confirm_frames"]
     )
-    active = valid and _STATE.line_streak >= confirm_frames
+    active = valid and _POLICY_STATE.line_streak >= confirm_frames
     if active:
         target = _line_target(track, signals, mode, profile, startup_only)
     held = _line_hold_correction(active, mode, profile)
@@ -896,14 +896,14 @@ def _lane_line_correction(
     elif (
         not valid
         and timestamp <= profile["startup_acquire_until"]
-        and _STATE.line_correction > 0.0
+        and _POLICY_STATE.line_correction > 0.0
     ):
         alpha = profile["startup_decay"]
     else:
         alpha = profile["smoothing"]
-    _STATE.line_correction = _STATE.line_correction * alpha + target * (1.0 - alpha)
+    _POLICY_STATE.line_correction = _POLICY_STATE.line_correction * alpha + target * (1.0 - alpha)
     return clamp(
-        _STATE.line_correction, -profile["max_correction"], profile["max_correction"]
+        _POLICY_STATE.line_correction, -profile["max_correction"], profile["max_correction"]
     )
 
 
@@ -918,16 +918,16 @@ def _update_policy_state(
     """Persist loss, recovery, bias, and command memory for the next frame."""
 
     if track.lost:
-        _STATE.lost_frames += 1
+        _POLICY_STATE.lost_frames += 1
     else:
-        if _STATE.lost_frames > 0:
-            _STATE.recovery_frames = int(profile["recovery_frames"])
-        _STATE.lost_frames = 0
-    if _STATE.recovery_frames > 0 and not track.lost:
-        _STATE.recovery_frames -= 1
+        if _POLICY_STATE.lost_frames > 0:
+            _POLICY_STATE.recovery_frames = int(profile["recovery_frames"])
+        _POLICY_STATE.lost_frames = 0
+    if _POLICY_STATE.recovery_frames > 0 and not track.lost:
+        _POLICY_STATE.recovery_frames -= 1
 
     if not track.lost and track.confidence >= profile["recovery_confidence"]:
-        _STATE.last_good_bias = clamp(
+        _POLICY_STATE.last_good_bias = clamp(
             track.lateral_error * 0.55
             + track.lookahead_error * 0.25
             + track.curvature * 0.20,
@@ -935,10 +935,10 @@ def _update_policy_state(
             1.0,
         )
 
-    _STATE.last_steering = steering
-    _STATE.last_speed = speed
-    _STATE.last_timestamp = timestamp
-    _STATE.last_mode = mode
+    _POLICY_STATE.last_steering = steering
+    _POLICY_STATE.last_speed = speed
+    _POLICY_STATE.last_timestamp = timestamp
+    _POLICY_STATE.last_mode = mode
 
 
 def _continue_forced_escape(
@@ -948,24 +948,24 @@ def _continue_forced_escape(
 ) -> ControlCmd | None:
     """Advance an active multi-car recovery sequence, if one exists."""
 
-    if not _STATE.force_escape_active:
+    if not _POLICY_STATE.force_escape_active:
         return None
-    if _STATE.force_escape_frames <= 0:
-        _STATE.force_escape_active = False
-        _STATE.lost_streak = 0
+    if _POLICY_STATE.force_escape_frames <= 0:
+        _POLICY_STATE.force_escape_active = False
+        _POLICY_STATE.lost_streak = 0
         return None
 
-    _STATE.force_escape_frames -= 1
-    elapsed = _STATE.force_escape_total_frames - _STATE.force_escape_frames
+    _POLICY_STATE.force_escape_frames -= 1
+    elapsed = _POLICY_STATE.force_escape_total_frames - _POLICY_STATE.force_escape_frames
     steering = clamp(
-        _STATE.force_escape_sign * _STATE.force_escape_steering,
+        _POLICY_STATE.force_escape_sign * _POLICY_STATE.force_escape_steering,
         -1.0,
         1.0,
     )
-    if elapsed <= _STATE.force_escape_reverse_frames:
+    if elapsed <= _POLICY_STATE.force_escape_reverse_frames:
         speed = -float(profile.get("force_reverse_back_speed", 0.42))
     else:
-        speed = _STATE.force_escape_speed
+        speed = _POLICY_STATE.force_escape_speed
     _update_policy_state(track, steering, speed, "escaping", timestamp, profile)
     return ControlCmd(steering, speed)
 
@@ -979,22 +979,22 @@ def _blockage_triggered(
     """Update independent blockage counters and report whether one fired."""
 
     if track.lost:
-        _STATE.lost_streak += 1
-        _STATE.not_stuck_frames = 0
+        _POLICY_STATE.lost_streak += 1
+        _POLICY_STATE.not_stuck_frames = 0
     else:
-        _STATE.not_stuck_frames += 1
-        if _STATE.not_stuck_frames > 90:
-            _STATE.lost_streak = 0
-            _STATE.not_stuck_frames = 0
+        _POLICY_STATE.not_stuck_frames += 1
+        if _POLICY_STATE.not_stuck_frames > 90:
+            _POLICY_STATE.lost_streak = 0
+            _POLICY_STATE.not_stuck_frames = 0
 
     zero_speed_frames = int(profile.get("force_reverse_zero_speed_frames", 120))
     zero_speed_threshold = float(
         profile.get("force_reverse_zero_speed_threshold", 0.05)
     )
     if speed <= zero_speed_threshold and drive_mode != "escaping":
-        _STATE.zero_speed_streak += 1
+        _POLICY_STATE.zero_speed_streak += 1
     else:
-        _STATE.zero_speed_streak = 0
+        _POLICY_STATE.zero_speed_streak = 0
 
     motion_still_threshold = float(profile.get("motion_still_threshold", 2.5))
     motion_still_frames = int(profile.get("motion_still_frames", 40))
@@ -1004,36 +1004,36 @@ def _blockage_triggered(
         and speed >= motion_min_cmd_speed
         and drive_mode != "escaping"
     ):
-        _STATE.motion_stall_streak += 1
+        _POLICY_STATE.motion_stall_streak += 1
     else:
-        _STATE.motion_stall_streak = 0
+        _POLICY_STATE.motion_stall_streak = 0
 
     return (
-        _STATE.lost_streak >= int(profile.get("force_reverse_lost_streak", 45))
-        or _STATE.zero_speed_streak >= zero_speed_frames
-        or _STATE.motion_stall_streak >= motion_still_frames
+        _POLICY_STATE.lost_streak >= int(profile.get("force_reverse_lost_streak", 45))
+        or _POLICY_STATE.zero_speed_streak >= zero_speed_frames
+        or _POLICY_STATE.motion_stall_streak >= motion_still_frames
     )
 
 
 def _start_forced_escape(track: TrackState, profile: dict) -> None:
     """Initialize a timed reverse/forward recovery toward the open side."""
 
-    _STATE.force_escape_active = True
-    _STATE.force_escape_frames = int(profile.get("force_reverse_lost_frames", 120))
-    _STATE.force_escape_total_frames = _STATE.force_escape_frames
-    _STATE.force_escape_reverse_frames = min(
+    _POLICY_STATE.force_escape_active = True
+    _POLICY_STATE.force_escape_frames = int(profile.get("force_reverse_lost_frames", 120))
+    _POLICY_STATE.force_escape_total_frames = _POLICY_STATE.force_escape_frames
+    _POLICY_STATE.force_escape_reverse_frames = min(
         int(profile.get("force_reverse_back_frames", 65)),
-        int(_STATE.force_escape_frames * 0.6),
+        int(_POLICY_STATE.force_escape_frames * 0.6),
     )
-    _STATE.force_escape_speed = float(profile.get("force_reverse_lost_speed", 0.35))
-    _STATE.force_escape_steering = float(
+    _POLICY_STATE.force_escape_speed = float(profile.get("force_reverse_lost_speed", 0.35))
+    _POLICY_STATE.force_escape_steering = float(
         profile.get("force_reverse_lost_steering", 0.88)
     )
-    _STATE.force_escape_sign = _margin_escape_sign(track, _road_direction_sign(track))
-    _STATE.lost_streak = 0
-    _STATE.not_stuck_frames = 0
-    _STATE.zero_speed_streak = 0
-    _STATE.motion_stall_streak = 0
+    _POLICY_STATE.force_escape_sign = _margin_escape_sign(track, _road_direction_sign(track))
+    _POLICY_STATE.lost_streak = 0
+    _POLICY_STATE.not_stuck_frames = 0
+    _POLICY_STATE.zero_speed_streak = 0
+    _POLICY_STATE.motion_stall_streak = 0
 
 
 def _apply_opponent_avoidance(
@@ -1086,7 +1086,7 @@ def decide_control(
         track, signals, drive_mode, profile
     )
     target_steering = _target_steering(track, signals, drive_mode, profile)
-    _STATE.last_target_steering = target_steering
+    _POLICY_STATE.last_target_steering = target_steering
     steering = _smooth_steering(target_steering, drive_mode, timestamp, profile)
     target_speed = _target_speed(
         track,
@@ -1097,9 +1097,9 @@ def decide_control(
         profile,
         straight_memory_active=straight_memory_active,
     )
-    _STATE.last_target_speed = target_speed
-    _STATE.last_signals = dict(signals)
-    _STATE.last_straight_memory_active = bool(straight_memory_active)
+    _POLICY_STATE.last_target_speed = target_speed
+    _POLICY_STATE.last_signals = dict(signals)
+    _POLICY_STATE.last_straight_memory_active = bool(straight_memory_active)
     speed = _smooth_speed(target_speed, timestamp, profile)
     # Geometry-specific recovery is enabled only in the red complex environment.
     steering, speed, drive_mode = _escape_if_stalled(
@@ -1116,7 +1116,7 @@ def decide_control(
     if (
         profile.get("enable_opponent", True)
         and blockage_triggered
-        and not _STATE.force_escape_active
+        and not _POLICY_STATE.force_escape_active
         and timestamp > 3.0
     ):
         _start_forced_escape(track, profile)

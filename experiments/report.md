@@ -6,6 +6,8 @@ The project implements a vision-only racing controller that converts stereo came
 
 The solo controller completed the official complex-world evaluation with a recorded total time of approximately `252.9 s` and no major collision in the matching metadata. In the recorded six-vehicle complex-world tests, the traffic profile finished second with no disqualification or serious collision. These values belong to the documented SDK and world revisions and should not be generalized to a different simulator configuration.
 
+A later local compatibility run used SDK revision `cfdeedb`, Webots R2025a, and the generated `with_other_cars` submission on the basic oval. Supervisor metadata recorded one completed lap in `139.744 s`, rank 1, and zero major collisions. The run used official R2025a Webots assets and corrected local asset paths and checkpoint coordinates in an isolated SDK checkout; it is reproducible simulator evidence, not an online competition result.
+
 ## Architecture
 
 The controller separates road perception, geometric estimation, driving policy, and output bounds. Scan-line corridor tracking and lane-marking detection produce a compact observation; a trusted geometric fit converts pixels into lateral, heading, look-ahead, curvature, and boundary state; the policy applies mode-dependent steering, speed, and recovery behavior.
@@ -35,6 +37,8 @@ The repository uses several evidence layers:
 5. telemetry, contact episodes, control logs, and selected frames for mechanism analysis.
 
 The workflow separates software correctness from driving evidence. A passing test suite does not establish lap completion, and a successful lap does not prove that interface, isolation, or state-reset contracts remain correct.
+
+The R071 compatibility run exposed a build-specific defect that mock validation had missed: three source modules each used the private name `_STATE`, so concatenating them into the platform's single-file submission made the final definition overwrite the other two. The controller caught the resulting exception and returned a safe zero command, which satisfied the output contract while leaving the car stationary. The generated build now uses distinct perception, estimator, and policy state names, and a regression test loads the built artifact and requires a non-zero command on a lane-like frame before Webots validation.
 
 ## Limitations
 

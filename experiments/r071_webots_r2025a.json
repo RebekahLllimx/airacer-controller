@@ -1,0 +1,37 @@
+{
+  "run_id": "R071",
+  "date": "2026-11-17",
+  "controller_profile": "with_other_cars",
+  "controller_revision": "state-isolation fix in this repository revision",
+  "sdk": {
+    "repository": "https://github.com/pkulab409/pkudsa.airacer.git",
+    "revision": "cfdeedb",
+    "checkout": "isolated worktree"
+  },
+  "simulator": {
+    "name": "Webots",
+    "version": "R2025a",
+    "world": "track_basic.wbt",
+    "mode": "fast batch, no rendering"
+  },
+  "compatibility_changes": [
+    "Resolved SDK asset references to an exact local checkout of official Cyberbotics R2025a assets.",
+    "Aligned the local supervisor checkpoint and finish-line coordinates with the included basic oval world."
+  ],
+  "result": {
+    "laps": 1,
+    "best_lap_seconds": 139.744,
+    "total_time_seconds": 279.593,
+    "rank": 1,
+    "major_collisions": 0,
+    "status": "normal",
+    "finish_reason": "grace_period_expired"
+  },
+  "evidence": {
+    "finish_event_sim_time": 281.6,
+    "race_end_sim_time": 341.6,
+    "metadata_written": true,
+    "telemetry_written": true
+  },
+  "scope": "Local SDK and simulator compatibility validation; not an online competition result."
+}
