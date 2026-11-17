@@ -1,111 +1,43 @@
-# 脚本工具索引
+# Script Reference
 
-这些脚本分两类：正式构建/校验工具，以及本地诊断工具。`controller/` 里的算法最终会被 `build_submission.py` 合并成单文件；`.tmp/` 里的调试产物不进 git。
+## Build and validation
 
-## 构建与校验
-
-| 脚本 | 输入 | 输出 | 用途 |
-|---|---|---|---|
-| `build_submission.py` | `controller/` 源码、`--mode no_other_cars\|with_other_cars` | 单文件 `team_controller.py` | 生成上传版或调试版控制器；`--mode` 决定走哪个策略 profile（单车：R049驾驶底座 / 多车）并注入 `PROFILE`，见 CLAUDE.md「Profile 隔离」 |
-| `validate_submission.py` | 单文件 controller | 终端校验结果 | 本仓库接口、静态规则、mock 输出检查 |
-
-常用命令：
+| Script | Purpose |
+| --- | --- |
+| `build_submission.py` | Assemble modular controller source into a self-contained solo or traffic submission |
+| `validate_submission.py` | Check interface, output bounds, forbidden imports, file size, and mock execution |
 
 ```bash
-python scripts/build_submission.py --mode no_other_cars   # → submissions/no_other_cars/
+python scripts/build_submission.py --mode no_other_cars
+python scripts/build_submission.py --mode with_other_cars
 python scripts/validate_submission.py submissions/no_other_cars/team_controller.py
-pytest -q
+python -m pytest -q
 ```
 
-调试构建可以加控制日志和相机帧输出，但不能上传：
+Debug builds may add local control logs and frame capture, but they must be written under `.tmp/` and must not be uploaded.
 
-```bash
-python scripts/build_submission.py --mode no_other_cars \
-  --debug-log .tmp/run/control_complex.jsonl \
-  --dump-frames .tmp/run/frames_complex \
-  --dump-frame-stride 10 \
-  --out .tmp/run/team_controller_debug.py
-```
+## Webots execution
 
-## 一键 Webots 运行
+| Script | Purpose |
+| --- | --- |
+| `webots_run.sh` | Solo run with automatic build, frame capture, control log, contact log, and archive rotation |
+| `webots_jump_run.sh` | Approximate restart from a historical telemetry pose |
+| `make_teleport_world.py` | Generate the temporary world used by a jump run |
+| `webots_multicar_run.sh` | Two-vehicle interaction run |
+| `webots_day_multicar.sh` | Six-vehicle traffic run |
+| `webots_auto_multicar.sh` | Unattended multi-car run with timeout and log-stall watchdog |
 
-| 脚本 | 用途 | 关键点 |
-|---|---|---|
-| `webots_run.sh` | 从头跑 `basic` 或 `complex`，自动构建 debug controller、清理孤儿进程、保存日志、帧和**撞栏接触日志** | 默认每 10 帧保存一对 PNG（`--no-frames` 关）；默认开撞栏接触日志 → `.tmp/run/contact_<world>.jsonl`（`--no-contact` 关）；新 run 开始前会把旧 `.tmp/run` 和旧 SDK telemetry 移到 `.tmp/run.archive/`，滚动保留最近 10 个 |
-| `webots_jump_run.sh` | 从已有 telemetry 的某个 `x/y/heading` 近似启动，观察当前代码从该姿态会怎么开 | 只恢复位置和朝向，不是严格续跑；新 jump run 开始前会把旧 `.tmp/jump_run` 和旧 SDK telemetry 移到 `.tmp/jump_run.archive/`，滚动保留最近 10 个 |
-| `make_teleport_world.py` | 给 jump run 生成临时 Webots world | 通常由 `webots_jump_run.sh` 调用 |
-| `webots_multicar_run.sh` | 双车 Webots | 默认两个车位都接 `with_other_cars` 构建，队名只是 run_local 标签；产物 `.tmp/multicar/`；堵路/被撞/卡栏极端场景需手动布置（见 `docs/multicar_extreme_tests.md`） |
-| `webots_day_multicar.sh` | 6 车 Webots（car_1 带 debug 日志，car_2-6 同款控制器=移动对手） | 复现真实多车交通 / CP3 拥堵 |
-| `webots_auto_multicar.sh` | **AI 无人值守** 6 车（后台 Webots + 看门狗，超时/日志静止自动收尾） | 参数 `<world> <最大秒> <静止判定秒> <车数> [对手速度缩放]`；第 5 参数 `<1` 给对手降速=纯超车测试；供 AI 自跑 |
+## Analysis
 
-多车的底层机制是 `run_local.py --car 文件:车位:队名`（可重复，最多 6 车位；未指定车位停在原地）。不同车位接入不同控制器单文件 = 接入不同策略，详见 `docs/human_webots_testing.md` 第 2 节。
+| Script | Question answered |
+| --- | --- |
+| `analyze_telemetry.py` | Where did the vehicle slow, stop, collide, or finish? |
+| `analyze_control_log.py` | Which state and policy terms produced the command? |
+| `analyze_contact_log.py` | When and where did static-geometry contact occur? |
+| `analyze_escape_episodes.py` | Did recovery trigger, reverse, and return to forward driving? |
+| `analyze_multicar_kpi.py` | What were finish, rank, collision, blockage, and overtaking outcomes? |
+| `plot_run.py` | What do the trajectory, speed, events, and contacts look like together? |
+| `analyze_perception_dump.py` | What road, lane, boundary, and obstacle evidence was extracted from selected frames? |
+| `replay_offline.py` | How does a new controller revision respond to the same recorded images? |
 
-常用命令：
-
-```bash
-# 单车
-bash scripts/webots_run.sh complex
-bash scripts/webots_run.sh complex --frames 1
-bash scripts/webots_run.sh complex --frame-window 226 230
-bash scripts/webots_run.sh complex --no-frames
-
-bash scripts/webots_jump_run.sh complex 226.5 --duration 6 \
-  --telemetry $AIRACER_SDK/.local/recordings/telemetry.jsonl
-
-# 多车
-bash scripts/webots_day_multicar.sh complex                 # 6 车真实交通
-bash scripts/webots_auto_multicar.sh complex 300 30 6 0.55  # AI 无人值守，对手半速=超车测试
-bash scripts/webots_multicar_run.sh complex                 # 双车
-```
-
-## 诊断一轮 run
-
-| 脚本 | 输入 | 输出 | 回答什么问题 |
-|---|---|---|---|
-| `analyze_telemetry.py` | SDK `telemetry.jsonl` | 位置、速度、事件、近停摘要 | 车跑到哪、有没有事件/爬行/卡住 |
-| `analyze_control_log.py` | `.tmp/run/control_*.jsonl` | mode、steering、speed、line_conf 等摘要 | 控制器内部为什么这样打轮/减速 |
-| `analyze_contact_log.py` | `.tmp/run/contact_*.jsonl` | 撞栏 episode（时间、位置、点数、高度） | **撞没撞栏、在哪、多重**（峰值点数≥3 且 zmax>0.6 = 真撞栏）。多车日志含所有车，加 `--car-slot car_1` 只看本车 |
-| `analyze_escape_episodes.py` | `.tmp/*/control_*.jsonl` | 脱困段（时长/是否倒车/倒车后是否恢复）、疑似卡死、误倒车检查 | 倒车脱困有没有真生效、有没有在正常驾驶里误倒车 |
-| `analyze_multicar_kpi.py` | SDK `telemetry.jsonl`(+`metadata.json`) | 名次/积分、完赛/DQ、严重碰撞、超车净值、开局互挤、卡死、速度 | **多车赛"评价指标"层**：with_other_cars 改动让名次/抢位变好了吗（按名次期望积分，不是 lap time）。telemetry append 累积，按 t 自动切 run，默认看最后一段 |
-| `plot_run.py` | telemetry，可选 contact log | `trajectory_speed.png` | 整场轨迹、速度、事件和撞栏位置长什么样 |
-| `analyze_perception_dump.py` | 相机帧 + control log | 感知摘要、可选 overlay | 画面里看到了什么，白线/mask/边界是否正确 |
-| `replay_offline.py` | 已保存相机帧 | 固定画面开环控制日志 | 同一批画面下，新代码的感知/策略字段怎么变 |
-
-常用命令：
-
-```bash
-python scripts/analyze_telemetry.py --no-archive
-python scripts/analyze_control_log.py .tmp/run/control_complex.jsonl
-
-python scripts/plot_run.py \
-  --telemetry $AIRACER_SDK/.local/recordings/telemetry.jsonl \
-  --contact-log .tmp/run/contact_complex.jsonl \
-  --out .tmp/run/trajectory_speed.png \
-  --title "R0xx complex"
-
-python scripts/analyze_perception_dump.py .tmp/run/frames_complex \
-  --mode no_other_cars \
-  --control-log .tmp/run/control_complex.jsonl \
-  --overlay-dir .tmp/run/overlays \
-  --at 226.56,228.48,229.44
-
-python scripts/replay_offline.py .tmp/run/frames_complex \
-  --out .tmp/run/replay_complex.jsonl
-```
-
-`plot_run.py --contact-log` 会把接触日志画到同一张总览图上：轨迹图用深红 X 标碰栏位置，
-速度图用深红时间窗标接触时段。接触先按时间 gap 0.3s 聚成 episode，再把世界坐标距离
-不超过 4.0 的 episode 合并成同一条标注；这个距离大致表示同一个弯角或同一段栏杆上的重复擦碰。
-
-## 保存和清理
-
-- 整场帧、整场 telemetry 复制件、批量 overlay 留在 `.tmp/`，不要进 git。`webots_run.sh` / `webots_jump_run.sh` 会把旧产物移到 `.tmp/run.archive/` 或 `.tmp/jump_run.archive/`，并滚动保留最近 10 个归档。
-- 会反复回归的失败窗口裁到 `experiments/cases/`。
-- 报告或长期回查要用的精选图进 `experiments/figures/`。
-- 当前最好版本的单文件快照进 `baselines/`。
-
-归档规则见 `experiments/README.md`、`experiments/cases/README.md`、`experiments/figures/README.md`。
-
-碰撞信号不要混用：telemetry `collision` 主要是车车碰撞；Webots GUI console 中如果由人眼看到类似
-`WARNING: Contact joints between materials 'default' and 'default' will only be created for the 10 deepest contact points instead of all the 12 contact points.`
-的提示，要按栏杆/静态几何接触记录。但当前 `.tmp/run/webots_console/*.log` 和 `.tmp/run/webots_launch.log` 通常读不到这类 GUI console 文本，AI 自动复盘不能依赖它；优先看 `.tmp/run/contact_*.jsonl`，再结合画面、轨迹、速度和控制日志判断。
+See the [Webots runbook](../docs/human_webots_testing.md) for complete examples and evidence-handling rules.

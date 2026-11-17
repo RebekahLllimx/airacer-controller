@@ -1,32 +1,40 @@
-# 控制器源码索引
+# Controller Module Guide
 
-`controller/` 是手写算法源码。正常只改这里，然后用 `scripts/build_submission.py` 生成 `submissions/` 下的单文件。
+`controller/` contains the maintained, modular implementation. The generated files in `submissions/` should be rebuilt with `scripts/build_submission.py` rather than edited by hand.
 
-主流水线：
+## Data flow
 
 ```text
-left_img/right_img
-→ perception.extract_observation()
-→ estimator.estimate_track()
-→ policy.decide_control()
-→ clamp_cmd()
-→ steering/speed
+left_img / right_img
+    -> perception.extract_observation()   -> PerceptionObs
+    -> estimator.estimate_track()         -> TrackState
+    -> policy.decide_control()             -> ControlCmd
+    -> clamp_cmd()                         -> steering, speed
 ```
 
-| 文件 | 职责 |
-|---|---|
-| `common.py` | 模块间数据结构和限幅工具。字段名是契约，改字段要同步所有调用方和测试。 |
-| `params.py` | 参数唯一来源。调参优先放这里，不在算法模块里硬编码。 |
-| `perception.py` | 图像处理：道路 mask、白线、近障碍/对手方向的感知输入。不能直接算控制量。 |
-| `estimator.py` | 从感知结果估计道路几何、白线状态、模式需要的状态。不能接触原图。 |
-| `policy.py` | 根据 `TrackState` 输出转向和速度。不能处理原图。 |
-| `opponent.py` | 近处车辆检测，输出是否有车、左右位置和近似尺寸。当前由 profile 开关控制。 |
-| `team_controller_local.py` | `control()` 接线、异常兜底、最终限幅。 |
+## Module boundaries
 
-改控制行为前先读根目录 `CLAUDE.md` 和 `experiments/STATUS.md`。改完通常要跑：
+| Module | Responsibility |
+| --- | --- |
+| `common.py` | Dataclasses and output-bound helpers shared across stages. Field names form the module contracts. |
+| `params.py` | Central source for perception and control parameters, including solo and multi-car profiles. |
+| `perception.py` | Road masks, scan-line road centres, lane markings, confidence, and obstacle observations from camera frames. |
+| `estimator.py` | Convert perception output into lateral, heading, look-ahead, curvature, margin, and loss state. |
+| `policy.py` | Map `TrackState` to steering, target speed, driving mode, avoidance, and recovery behaviour. |
+| `opponent.py` | Detect nearby vehicles and estimate their horizontal position and apparent size for the multi-car profile. |
+| `team_controller_local.py` | Connect the stages, reset state when required, handle exceptions, and clamp the final command. |
+
+The separation is intentional: perception does not issue control commands, estimation does not read raw images, and policy does not perform image processing. This keeps failures attributable to a stage and allows contract-level tests.
+
+## Build and validate
 
 ```bash
-python scripts/build_submission.py --mode no_other_cars --out submissions/no_other_cars/team_controller.py
+python scripts/build_submission.py --mode no_other_cars
+python scripts/build_submission.py --mode with_other_cars
+
 python scripts/validate_submission.py submissions/no_other_cars/team_controller.py
-pytest -q
+python scripts/validate_submission.py submissions/with_other_cars/team_controller.py
+python -m pytest -q
 ```
+
+The build script concatenates the modules in dependency order and injects the selected profile into a self-contained `team_controller.py`. See the [technical manual](../docs/technical_manual.md) for algorithm details and the [testing guide](../docs/README.md) for SDK and Webots validation.

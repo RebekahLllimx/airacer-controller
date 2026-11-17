@@ -43,17 +43,28 @@ python scripts/validate_submission.py submissions/with_other_cars/team_controlle
 
 The build commands regenerate the tracked submission files. The checks cover contracts and local submission rules; they do not measure driving performance. For the separate official SDK validator and a Webots run, follow [SDK setup and testing](docs/official_testing.md). That workflow uses `AIRACER_SDK` to point to an external SDK checkout.
 
-## Evidence and project history
+## Key technical decisions
 
-[`experiments/runs.csv`](experiments/runs.csv), the [experiment notes](experiments/notes.md), and the [report](experiments/report.md) record course runs, including multi-car scenarios. These are historical results. A new build should be driven and logged again before making a current performance claim. The [experiment archive guide](experiments/README.md) explains how runs, failure cases, and figures are organized.
+| Decision | Rationale |
+| --- | --- |
+| Perception, estimation, and control as separate modules | Pixel processing, geometric state, and driving policy can be tested and revised without hiding their assumptions in one control function. |
+| Typed frame-to-frame state | `PerceptionObs`, `TrackState`, and `ControlCmd` make module contracts explicit and carry only the state needed by the next stage. |
+| Temporal road-centre tracking | Previous-frame anchors stabilize ambiguous road segments while timestamp rollback and reset rules prevent stale state from leaking across runs. |
+| Profile-gated multi-car behaviour | Solo and traffic submissions share the driving core, while opponent detection, avoidance, and reverse recovery execute only in the multi-car profile. |
+| Generated single-file submissions | Development remains modular, but the build step produces the self-contained controller required by the competition platform. |
+| Layered validation | Unit and contract tests verify deterministic logic; SDK validation checks submission constraints; Webots runs evaluate closed-loop driving behaviour. |
 
-This was a **five-person team project**. My work focused on multi-car avoidance and recovery in the shared [perception](controller/perception.py) and [policy](controller/policy.py) pipeline, using prior road-center state to stabilize ambiguous segmentation, resolving a controller-simulator interface mismatch, and building [multi-car launch](scripts/webots_multicar_run.sh) and blocked-road test procedures. I also integrated modules through shared contracts and single-file builds. The commit history and experiment records retain the team's contributions; [the R052 scope note](docs/r052_contribution_scope.md) separates that reviewed work from later team development.
+## Validation and evidence
 
-## Where to go next
+[`experiments/runs.csv`](experiments/runs.csv) and the [experiment report](experiments/report.md) retain Webots and platform results, failure mechanisms, and design conclusions. Results are tied to a controller revision, profile, world, and run configuration rather than presented as timeless performance claims.
 
-- [Engineering handoff](experiments/STATUS.md): the team's last recorded status, open questions, and next steps (last updated June 2026).
+This was a **five-person team project**. My contribution centred on multi-car avoidance and recovery in the shared [perception](controller/perception.py) and [policy](controller/policy.py) pipeline: stabilizing ambiguous road segmentation with temporal state, resolving a controller-simulator command mismatch, integrating modules through shared contracts and single-file builds, and adding multi-car launch and blocked-road test procedures. The [contribution note](docs/r052_contribution_scope.md) records the reviewed scope and its relationship to later team development.
+
+## Documentation
+
+- [Controller architecture](docs/technical_manual.md): perception, state estimation, control, profiles, and multi-car behaviour.
 - [Controller module guide](controller/README.md): source boundaries and data flow.
-- [Testing documentation](docs/README.md): official SDK, Webots, and review procedures.
+- [Testing guide](docs/README.md): offline tests, SDK validation, Webots execution, and run analysis.
 - [Script index](scripts/README.md): build, validation, replay, and analysis commands.
-- [Submission guide](submissions/README.md): generated artifacts and submission rules.
-- [Experiment archive](experiments/README.md): recorded runs, cases, and figures.
+- [Submission guide](submissions/README.md): generated artifacts and platform constraints.
+- [Experiment archive](experiments/README.md): historical runs, failure cases, and report figures.

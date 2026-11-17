@@ -1,19 +1,30 @@
-# 文档索引
+# Documentation Guide
 
-这里放流程文档和官方环境说明。当前状态不在本目录维护，先读 `experiments/STATUS.md`。
+These documents cover the controller architecture, local and official validation, Webots execution, and post-run diagnosis. Start with the document that matches the question you are trying to answer.
 
-| 文档 | 负责什么 | 什么时候读 |
-|---|---|---|
-| `official_testing.md` | 官方 SDK、Webots、validator、run_local 的安装和命令 | 首次配环境、提交前验证 |
-| `official_test_matrix.md` | 官方 world、车位、线上/本地测试入口和赛制静态清单 | 查赛道和测试入口 |
-| `human_webots_testing.md` | 怎么跑 Webots：单车、多车、不同车位接入不同控制器/策略，以及产物在哪 | 需要真实上车验证时 |
-| `multicar_extreme_tests.md` | 多车极端场景（堵路/被撞/卡栏）怎么手动布置和跑 | 专门测多车脱困时 |
-| `ai_offline_review.md` | AI 用 telemetry、控制日志、相机帧和 overlay 诊断一轮 run | 跑完后复盘机制 |
-| `technical_manual.md` | 控制器整体逻辑（一帧画面怎么变成舵角/油门，交付版） | 想理解控制流水线时 |
+| Document | Purpose |
+| --- | --- |
+| [`technical_manual.md`](technical_manual.md) | Explain how camera frames become road geometry, steering, speed, avoidance, and recovery commands. |
+| [`official_testing.md`](official_testing.md) | Configure the official SDK, run its validator, and launch supported Webots worlds. |
+| [`human_webots_testing.md`](human_webots_testing.md) | Run solo or multi-car Webots tests and collect the expected output artifacts. |
+| [`multicar_extreme_tests.md`](multicar_extreme_tests.md) | Reproduce blocked-road, collision, and recovery scenarios for the traffic profile. |
+| [`r052_contribution_scope.md`](r052_contribution_scope.md) | Record the reviewed contribution scope within the five-person team project. |
 
-## 推荐阅读顺序
+## Suggested reading paths
 
-1. 新接手：先读 `experiments/STATUS.md`，再回到根目录 `README.md`。
-2. 要跑 Webots：读 `human_webots_testing.md`。AI 日常迭代可以自跑，关键验收再请人类看。
-3. 要分析一轮 run：读 `ai_offline_review.md`，再按需要看 `scripts/README.md`。
-4. 要提交或跑官方校验：读 `official_testing.md`。
+### Understand the controller
+
+1. Read the root [`README.md`](../README.md) for the project boundary and build workflow.
+2. Read [`technical_manual.md`](technical_manual.md) for the perception-to-control design.
+3. Use the [`controller/` module guide](../controller/README.md) while reading the source.
+
+### Reproduce the checks
+
+1. Run the offline test and build commands in the root README.
+2. Follow [`official_testing.md`](official_testing.md) for SDK validation.
+3. Follow [`human_webots_testing.md`](human_webots_testing.md) for closed-loop simulation.
+4. Use the analysis commands in [`human_webots_testing.md`](human_webots_testing.md) to interpret the recorded run.
+
+### Inspect development evidence
+
+The [`experiments/`](../experiments/) directory contains structured historical runs, a consolidated report, regression cases, and selected figures.

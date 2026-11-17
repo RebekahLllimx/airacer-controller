@@ -1,24 +1,12 @@
-# Baseline 快照索引
+# Validated Controller Baselines
 
-`baselines/` 保存已经实跑确认、值得长期保留的控制器快照。它用于对比和回退，不是每次实验都要建。
+`baselines/` stores generated controllers that were exercised in Webots and remain useful for comparison or rollback. A baseline is not created for every experiment.
 
-每个 baseline 目录至少应包含：
+| Baseline | Purpose |
+| --- | --- |
+| `R049_turn_in_speed_best_2026-06-13/` | Strong solo-driving reference after corner-arrival gating and speed improvements |
+| `R038_phase22_best_human_2026-06-12/` | Earlier conservative reference with residual tight-radius behavior |
+| `R011_line_posfirst_2026-06-11/` | Early lane-position reference for basic-track comparisons |
+| `webots_basic_physical_finish_2026-06-10/` | Initial physical completion snapshot on the basic world |
 
-- `README.md`：来源 commit、实跑结论、适用范围、为什么值得保留。
-- `team_controller.py`：当时可直接运行/上传的单文件控制器。
-- 可选参数或证据摘要。
-
-当前重要 baseline：
-
-| 目录 | 含义 |
-|---|---|
-| `R049_turn_in_speed_best_2026-06-13/` | **当前最佳**：入弯门控重做(R042-R048)+提速(R049) 后，半径稳、速度快(mean 0.85)、无硬撞。 |
-| `R038_phase22_best_human_2026-06-12/` | 历史最好（已被 R049 超越）。多数弯不剐蹭，残留是弯中半径偏小。 |
-| `R011_line_posfirst_2026-06-11/` | 较早的白线位置优先版本，曾作为 basic 用户验证较好基线。 |
-| `webots_basic_physical_finish_2026-06-10/` | 早期 basic 物理完赛快照。 |
-
-新建 baseline 前先确认它满足至少一个条件：
-
-- Webots 实跑确认明显优于上一版；AI 自跑可用于日常筛选，关键 best 才需要人类验收。
-- 作为回退点有价值。
-- 报告或后续对比需要固定这个版本。
+Each directory contains a self-contained controller and a short evidence note. Git history remains the authoritative source for the modular implementation.

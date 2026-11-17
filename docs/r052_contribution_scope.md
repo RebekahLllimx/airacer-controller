@@ -1,10 +1,10 @@
-# R052 contribution scope and later upstream work
+# R052 Contribution Scope and Later Team Work
 
-This repository includes the reviewed R052 handoff and later team development. The two should not be treated as one personal contribution history.
+This repository includes the reviewed R052 milestone and later team development. The two should not be treated as one personal contribution history.
 
 ## Reviewed R052 line
 
-The R052 work is recorded in the sequence from `41201d1` through `e53f12b`, `f13354c`, `d0b7ab4`, and the handoff commit `9fc9d89`. The reviewed contribution focuses on:
+The R052 work is recorded in the sequence from `41201d1` through `e53f12b`, `f13354c`, `d0b7ab4`, and milestone commit `9fc9d89`. The reviewed contribution focuses on:
 
 - temporal road-centre tracking across frames;
 - obstacle-aware steering and speed control;
@@ -16,7 +16,7 @@ Generated files under `submissions/` are build artifacts. The maintainable sourc
 
 ## Later team development
 
-Commits after the R052 handoff include additional recovery behavior, profile isolation, report work and team integration. They are part of the repository's current system, but are not automatically personal R052 contributions. Use the commit history and experiment records when attributing a specific mechanism or result.
+Commits after R052 include additional recovery behavior, profile isolation, report work, and team integration. They are part of the repository's current system, but are not automatically personal R052 contributions. Use the commit history and experiment records when attributing a specific mechanism or result.
 
 Useful checks:
 
