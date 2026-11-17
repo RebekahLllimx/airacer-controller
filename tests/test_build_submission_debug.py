@@ -22,6 +22,16 @@ def _load_module(path: Path):
     return module
 
 
+def test_import_stripping_is_independent_of_formatter_line_wrapping():
+    source = """from controller.common import (\n    ControlCmd,\n    TrackState,\n)\nimport numpy as np\nVALUE = 3\n"""
+
+    stripped = build_submission.strip_local_imports(source)
+
+    assert "controller.common" not in stripped
+    assert "numpy" not in stripped
+    assert stripped == "VALUE = 3"
+
+
 def test_normal_build_source_has_no_frame_dump_probe():
     source = build_submission.build_source("no_other_cars")
 
@@ -38,7 +48,9 @@ def test_debug_build_can_dump_left_and_right_frames(tmp_path):
     dump_dir.mkdir()
     module_path = tmp_path / "team_controller_debug.py"
     module_path.write_text(
-        build_submission.build_source("no_other_cars", dump_frames=str(dump_dir), dump_frame_stride=1),
+        build_submission.build_source(
+            "no_other_cars", dump_frames=str(dump_dir), dump_frame_stride=1
+        ),
         encoding="utf-8",
     )
     module = _load_module(module_path)
@@ -52,7 +64,9 @@ def test_debug_build_can_dump_left_and_right_frames(tmp_path):
     assert "frame_000012_345_left.png" in {path.name for path in saved}
     assert "frame_000012_345_right.png" in {path.name for path in saved}
     assert np.array_equal(cv2.imread(str(dump_dir / "frame_000012_345_left.png")), left)
-    assert np.array_equal(cv2.imread(str(dump_dir / "frame_000012_345_right.png")), right)
+    assert np.array_equal(
+        cv2.imread(str(dump_dir / "frame_000012_345_right.png")), right
+    )
     assert -1.0 <= steering <= 1.0
     assert 0.0 <= speed <= 1.0
 
@@ -95,7 +109,9 @@ def test_debug_build_can_tee_controller_console(tmp_path):
     console_dir = tmp_path / "console"
     module_path = tmp_path / "team_controller_debug.py"
     module_path.write_text(
-        build_submission.build_source("no_other_cars", debug_log=str(tmp_path / "control.jsonl")),
+        build_submission.build_source(
+            "no_other_cars", debug_log=str(tmp_path / "control.jsonl")
+        ),
         encoding="utf-8",
     )
     env = {**os.environ, "AIRACER_CONTROLLER_CONSOLE_LOG_DIR": str(console_dir)}

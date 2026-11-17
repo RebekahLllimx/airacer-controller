@@ -31,30 +31,47 @@ MODULE_ORDER = [
 
 
 def strip_local_imports(source: str) -> str:
-    """移除提交文件不应保留的本地 import。
+    """Remove imports supplied by the generated single-file header.
 
-    功能：让生成文件不依赖 `controller/` 包。
-    参数：`source` 是单个模块源码。
-    返回：删除本地 import 行后的源码。
-    逻辑：外部允许库由构建头部统一导入，模块间依赖由拼接顺序解决。
+    Import nodes are removed by source span rather than string matching. This
+    keeps the build stable when a formatter wraps an import across lines.
     """
 
-    kept_lines = []
-    for line in source.splitlines():
-        stripped = line.strip()
-        if stripped.startswith("from __future__"):
-            continue
-        if stripped.startswith("from controller.") or stripped.startswith("from ."):
-            continue
-        if stripped in {
-            "import cv2",
-            "import math",
-            "import numpy as np",
-            "from dataclasses import dataclass",
-        }:
-            continue
-        kept_lines.append(line)
-    return "\n".join(kept_lines).strip()
+    tree = ast.parse(source)
+    removable_ranges: list[tuple[int, int]] = []
+    bundled_imports = {("cv2", None), ("math", None), ("numpy", "np")}
+
+    for node in tree.body:
+        remove = False
+        if isinstance(node, ast.ImportFrom):
+            module = node.module or ""
+            remove = (
+                module == "__future__"
+                or node.level > 0
+                or module.startswith("controller.")
+                or (
+                    module == "dataclasses"
+                    and all(alias.name == "dataclass" for alias in node.names)
+                )
+            )
+        elif isinstance(node, ast.Import):
+            remove = all(
+                (alias.name, alias.asname) in bundled_imports
+                for alias in node.names
+            )
+        if remove:
+            removable_ranges.append((node.lineno, node.end_lineno or node.lineno))
+
+    lines = source.splitlines()
+    removed_lines = {
+        line_number
+        for start, end in removable_ranges
+        for line_number in range(start, end + 1)
+    }
+    return "\n".join(
+        line for line_number, line in enumerate(lines, start=1)
+        if line_number not in removed_lines
+    ).strip()
 
 
 def strip_submission_text(source: str) -> str:
