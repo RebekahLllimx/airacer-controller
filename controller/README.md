@@ -18,9 +18,9 @@ left_img / right_img
 | --- | --- |
 | `common.py` | Dataclasses and output-bound helpers shared across stages. Field names form the module contracts. |
 | `params.py` | Central source for perception and control parameters, including solo and multi-car profiles. |
-| `perception.py` | Road masks, scan-line road centres, lane markings, confidence, and obstacle observations from camera frames. |
-| `estimator.py` | Convert perception output into lateral, heading, look-ahead, curvature, margin, and loss state; own cross-frame geometry memory. |
-| `policy.py` | Map `TrackState` to steering, target speed, driving mode, avoidance, and recovery behaviour; own policy hysteresis and recovery state. |
+| `perception.py` | Run explicit road segmentation, scan collection, scoring, lane-marking detection, stereo fusion, and obstacle-observation stages. |
+| `estimator.py` | Measure lateral, heading, look-ahead, curvature, and margin geometry; then apply cross-frame smoothing and loss handling. |
+| `policy.py` | Blend steering terms, plan speed, select driving modes and immutable recovery plans, and own policy hysteresis. |
 | `opponent.py` | Detect nearby vehicles and estimate their horizontal position and apparent size for the multi-car profile. |
 | `team_controller_local.py` | Connect the stages, reset state when required, handle exceptions, and clamp the final command. |
 

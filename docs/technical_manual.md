@@ -38,6 +38,8 @@ The platform exposes one controller callback, so the maintained runtime uses one
 
 Each camera is processed independently. The controller crops the lower image region, then classifies pixels using calibrated HSV and Lab colour profiles for asphalt, shoulder, guardrail, grass, red ground, sky, and vehicle colours. The asphalt mask is cleaned with morphology and excludes bright shoulder and non-road regions. A Canny edge mask is retained only as a fallback when colour segmentation fails.
 
+The implementation keeps this pipeline explicit: road-surface segmentation, translucent-checkpoint bridging, and optional opponent detection are separate functions. This prevents scene-specific logic from being folded into one opaque mask builder.
+
 The perception output also records texture, mask fill ratio, and debug flags. These quantities help distinguish a narrow but valid road region from an empty or overfilled mask.
 
 ### 2.2 Scan-line corridor tracking
@@ -50,6 +52,8 @@ Horizontal scan lines are evaluated from near to far. Continuous road segments a
 - scan confidence.
 
 Previous-frame centres are stored as coordinate tuples and matched to the nearest scan height. This temporal anchor reduces candidate switching when a wide or fragmented mask produces multiple plausible segments. Timestamp rollback and explicit resets clear the stored state so it cannot leak across runs.
+
+Collection and scoring are separate stages. `_collect_road_samples()` traces the corridor; `_completed_scan()` converts those samples into a confidence-scored camera contract. Stereo fusion then either selects the reliable camera or merges compatible scans, while obstacle fusion remains independent of road geometry.
 
 ### 2.3 Lane-marking detection
 
@@ -80,6 +84,8 @@ Image coordinates are normalized around the camera centre. A line or quadratic c
 
 Curvature trust falls when points are sparse, cover too little vertical range, or fit poorly. Low-confidence frames decay the previous estimate rather than forcing every state to zero. Lane-marking evidence can pull the road-centre estimate toward a more reliable centre reference when its confidence and shape checks pass.
 
+`_measure_geometry()` performs the stateless fit and returns an immutable `GeometryEstimate`. `_smoothed_track()` is the only stage that combines that measurement with prior-frame state. Keeping measurement separate from temporal smoothing makes both failure modes and tests easier to interpret.
+
 ## 4. Driving policy
 
 ### 4.1 Risk and modes
@@ -100,6 +106,8 @@ look-ahead term = look-ahead error * look-ahead gain
 The far-field term is gated by physical corner arrival. A distant bend can be visible before the vehicle reaches the corner; using it at full strength too early cuts inside. The gate therefore grows primarily from near-field lateral displacement, opens slightly earlier at higher speed, remains latched through the corner, and decays after exit. This produces a more stable outside-in-out trajectory.
 
 When a trusted lane marking indicates that the vehicle is already inside the intended path, a bounded corner-relief term reduces further inward anticipation. The final command then receives smoothing, rate limiting, speed-dependent steering reduction, a dead zone, and output clipping.
+
+Corner arrival, inside-corner relief, near/far term blending, and drive-mode adjustments are implemented as separate policy functions. Recovery selection similarly returns an immutable `EscapePlan` before any state is mutated. These boundaries replace the previous accumulation of case-specific branches inside a few large controller functions.
 
 ### 4.3 Speed
 
