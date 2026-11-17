@@ -1,9 +1,8 @@
-"""静止对手控制器（场景取证用，不上传）。
+"""Keep an opponent stationary in local multi-car evidence scenarios.
 
-用途：在 teleport 摆好的取证场景里，把对手车位接成"停着不动"——每帧返回零转向、零速度，
-让它作为静态障碍斜停在本车前方，用来复现并截图多车避让算法（减速 + 有界绕行）。
-
-只在本地 run_local.py 多车实跑里当对手控制器用，绝不进正式提交。
+The controller returns zero steering and speed so a teleported vehicle can act
+as a repeatable obstacle while the primary controller is evaluated. It is not
+included in either submission build.
 """
 
 
