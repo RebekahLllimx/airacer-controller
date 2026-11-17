@@ -747,6 +747,16 @@ class EstimatorState:
     def __post_init__(self):
         if self.last_track is None:
             self.last_track = TrackState(0.0, 0.0, 0.0, 0.0, 0.0, True)
+
+@dataclass(frozen=True)
+class GeometryEstimate:
+    lateral_error: float
+    heading_error: float
+    curvature: float
+    lookahead_error: float
+    confidence: float
+    left_margin_near: float
+    right_margin_near: float
 _STATE = EstimatorState()
 
 def _lost_track(confidence, red_environment=None, obs=None):
@@ -949,54 +959,60 @@ def _maybe_reset_estimator_by_timestamp(timestamp):
     if elapsed < 0.0 or elapsed > ESTIMATOR_PROFILE['timestamp_reset_gap']:
         reset_estimator_state()
 
-def estimate_track(obs, timestamp):
-    timestamp = float(timestamp)
-    _maybe_reset_estimator_by_timestamp(timestamp)
-    observed_red = bool(obs.debug_flags & _RED_ENVIRONMENT_FLAG)
-    if observed_red:
+def _red_environment(obs):
+    observed = bool(obs.debug_flags & _RED_ENVIRONMENT_FLAG)
+    if observed:
         _STATE.red_environment_streak += 1
     elif not _STATE.last_red_environment:
         _STATE.red_environment_streak = 0
     if _STATE.red_environment_streak >= _RED_ENVIRONMENT_LATCH_FRAMES:
         _STATE.last_red_environment = True
-    red_environment = observed_red or _STATE.last_red_environment
-    line_trust = _line_target_trust(obs, timestamp, red_environment)
-    line_trust = _update_line_memory(obs, line_trust, timestamp, red_environment)
+    return observed or _STATE.last_red_environment
+
+def _measure_geometry(obs, line_trust, red_environment):
     points = _clean_points(obs.center_points)
     if len(points) < ESTIMATOR_PROFILE['min_center_points'] or obs.confidence < ESTIMATOR_PROFILE['lost_confidence']:
-        track = _line_only_track(obs, timestamp, red_environment, line_trust) if line_trust > 0.0 else _lost_track(obs.confidence, red_environment, obs)
-        _STATE.last_track = track
-        _STATE.last_timestamp = timestamp
-        return track
+        return (None, True)
     (x_norm, progress, y_span) = _normalize_points(points)
     if y_span < ESTIMATOR_PROFILE['min_y_span']:
-        track = _lost_track(obs.confidence, red_environment, obs)
-        _STATE.last_track = track
-        _STATE.last_timestamp = timestamp
-        return track
+        return (None, False)
     (coeffs, degree) = _fit_centerline(progress, x_norm)
     lateral_error = clamp(_value_from_band(progress, x_norm, coeffs, progress <= ESTIMATOR_PROFILE['near_progress_max'], ESTIMATOR_PROFILE['near_eval_progress']), -1.0, 1.0)
     lookahead_error = clamp(_value_from_band(progress, x_norm, coeffs, progress >= ESTIMATOR_PROFILE['far_progress_min'], ESTIMATOR_PROFILE['far_eval_progress']), -1.0, 1.0)
     heading_error = _heading_from_fit(coeffs, degree)
     (lateral_error, heading_error, lookahead_error) = _apply_line_target(lateral_error, heading_error, lookahead_error, obs, line_trust)
     fit_score = _fit_error_score(progress, x_norm, coeffs)
-    curvature_trust = _curvature_trust(len(points), y_span, fit_score)
-    curvature = _curvature_from_fit(coeffs, degree, lateral_error, lookahead_error, curvature_trust)
-    left_margin_near = _near_edge_margin(obs.left_edge_points, 'left')
-    right_margin_near = _near_edge_margin(obs.right_edge_points, 'right')
+    curvature = _curvature_from_fit(coeffs, degree, lateral_error, lookahead_error, _curvature_trust(len(points), y_span, fit_score))
     confidence = _geometry_confidence(obs, points, y_span, fit_score)
     if line_trust > 0.0:
         confidence = max(confidence, obs.line_confidence * ESTIMATOR_PROFILE['line_target_confidence_scale'])
     if red_environment and confidence > ESTIMATOR_PROFILE['lost_confidence'] * 0.6:
         confidence = min(confidence + 0.08, 1.0)
-    if confidence < ESTIMATOR_PROFILE['lost_confidence']:
-        track = _lost_track(confidence, red_environment, obs)
+    return (GeometryEstimate(lateral_error, heading_error, curvature, lookahead_error, confidence, _near_edge_margin(obs.left_edge_points, 'left'), _near_edge_margin(obs.right_edge_points, 'right')), False)
+
+def _smoothed_track(obs, geometry, red_environment):
+    alpha = _smooth_alpha(geometry.confidence)
+    curve_alpha = clamp(ESTIMATOR_PROFILE['curve_smooth_alpha'] + ESTIMATOR_PROFILE['low_conf_extra_smoothing'] * (1.0 - geometry.confidence), ESTIMATOR_PROFILE['min_smooth_alpha'], ESTIMATOR_PROFILE['max_smooth_alpha'])
+    return TrackState(_smooth_limited(_STATE.last_track.lateral_error, geometry.lateral_error, alpha, ESTIMATOR_PROFILE['max_error_delta']), _smooth_limited(_STATE.last_track.heading_error, geometry.heading_error, alpha, ESTIMATOR_PROFILE['max_heading_delta']), _smooth_limited(_STATE.last_track.curvature, geometry.curvature, curve_alpha, ESTIMATOR_PROFILE['max_curvature_delta']), _smooth_limited(_STATE.last_track.lookahead_error, geometry.lookahead_error, alpha, ESTIMATOR_PROFILE['max_error_delta']), geometry.confidence, False, red_environment, clamp(float(obs.line_offset), -1.0, 1.0), clamp(float(obs.line_heading), -1.0, 1.0), clamp(float(obs.line_confidence), 0.0, 1.0), geometry.left_margin_near, geometry.right_margin_near, bool(obs.near_obstacle), clamp(float(obs.obstacle_x), -1.0, 1.0), max(float(obs.obstacle_size), 0.0), obs.frame_motion)
+
+def estimate_track(obs, timestamp):
+    timestamp = float(timestamp)
+    _maybe_reset_estimator_by_timestamp(timestamp)
+    red_environment = _red_environment(obs)
+    line_trust = _line_target_trust(obs, timestamp, red_environment)
+    line_trust = _update_line_memory(obs, line_trust, timestamp, red_environment)
+    (geometry, line_only_allowed) = _measure_geometry(obs, line_trust, red_environment)
+    if geometry is None:
+        track = _line_only_track(obs, timestamp, red_environment, line_trust) if line_only_allowed and line_trust > 0.0 else _lost_track(obs.confidence, red_environment, obs)
         _STATE.last_track = track
         _STATE.last_timestamp = timestamp
         return track
-    alpha = _smooth_alpha(confidence)
-    curve_alpha = clamp(ESTIMATOR_PROFILE['curve_smooth_alpha'] + ESTIMATOR_PROFILE['low_conf_extra_smoothing'] * (1.0 - confidence), ESTIMATOR_PROFILE['min_smooth_alpha'], ESTIMATOR_PROFILE['max_smooth_alpha'])
-    track = TrackState(_smooth_limited(_STATE.last_track.lateral_error, lateral_error, alpha, ESTIMATOR_PROFILE['max_error_delta']), _smooth_limited(_STATE.last_track.heading_error, heading_error, alpha, ESTIMATOR_PROFILE['max_heading_delta']), _smooth_limited(_STATE.last_track.curvature, curvature, curve_alpha, ESTIMATOR_PROFILE['max_curvature_delta']), _smooth_limited(_STATE.last_track.lookahead_error, lookahead_error, alpha, ESTIMATOR_PROFILE['max_error_delta']), confidence, False, red_environment, clamp(float(obs.line_offset), -1.0, 1.0), clamp(float(obs.line_heading), -1.0, 1.0), clamp(float(obs.line_confidence), 0.0, 1.0), left_margin_near, right_margin_near, bool(obs.near_obstacle), clamp(float(obs.obstacle_x), -1.0, 1.0), max(float(obs.obstacle_size), 0.0), obs.frame_motion)
+    if geometry.confidence < ESTIMATOR_PROFILE['lost_confidence']:
+        track = _lost_track(geometry.confidence, red_environment, obs)
+        _STATE.last_track = track
+        _STATE.last_timestamp = timestamp
+        return track
+    track = _smoothed_track(obs, geometry, red_environment)
     _STATE.last_track = track
     _STATE.last_timestamp = timestamp
     return track
