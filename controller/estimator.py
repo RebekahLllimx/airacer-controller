@@ -51,15 +51,7 @@ def _lost_track(
     red_environment: bool | None = None,
     obs: PerceptionObs | None = None,
 ) -> TrackState:
-    """生成丢线状态。
-
-    功能：保留上一帧估计的衰减值，避免控制量突然归零。
-    参数：`confidence` 是当前可用的低置信度，`obs` 提供本帧白线状态。
-    返回：`lost=True` 的 `TrackState`。
-    逻辑：各几何量使用独立衰减参数，置信度裁剪到合法范围。白线状态透传本帧
-    感知结果而不衰减：道路 mask 饱和（蓝门/天空）导致的 lost 帧白线往往仍可见，
-    是后置白线修正在这些帧上保持方向的唯一来源。
-    """
+    """Decay prior geometry while preserving current lane and obstacle evidence."""
 
     if red_environment is None:
         red_environment = _STATE.last_track.red_environment
@@ -98,13 +90,7 @@ def _lost_track(
 
 
 def _clean_points(points) -> np.ndarray:
-    """清洗感知中心点。
-
-    功能：把输入转为 `float32` 的 `N x 2` 数组，并过滤 NaN / inf。
-    参数：`points` 是 `PerceptionObs.center_points`。
-    返回：只含有限坐标的二维数组。
-    逻辑：异常形状直接返回空数组，由上层进入 lost。
-    """
+    """Convert center points to a finite float32 array with shape ``N x 2``."""
 
     try:
         array = np.asarray(points, dtype=np.float32)
@@ -116,13 +102,7 @@ def _clean_points(points) -> np.ndarray:
 
 
 def _normalize_points(points: np.ndarray) -> tuple[np.ndarray, np.ndarray, float]:
-    """把图像坐标转换成横向误差和前后进度。
-
-    功能：固定图像中心为 320，把 x 归一化到 `[-1, 1]`，把 y 转成 progress。
-    参数：`points` 是清洗后的中心点。
-    返回：`x_norm`、`progress` 和 y 跨度。
-    逻辑：progress=0 表示近处，progress=1 表示远处。
-    """
+    """Normalize image x to lateral error and y to near-to-far progress."""
 
     y = points[:, 1].astype(np.float32)
     y_min = float(np.min(y))
@@ -137,7 +117,7 @@ def _normalize_points(points: np.ndarray) -> tuple[np.ndarray, np.ndarray, float
 
 
 def _near_edge_margin(edge_points, side: str) -> float:
-    """估计近处车身中线到某侧边界的归一化余量。"""
+    """Estimate normalized near-field clearance from the image center."""
 
     points = _clean_points(edge_points)
     if len(points) == 0:
@@ -158,7 +138,7 @@ def _near_edge_margin(edge_points, side: str) -> float:
 
 
 def _line_weight(line_confidence: float) -> float:
-    """把白线置信度转换成目标线融合权重。"""
+    """Convert lane confidence into a bounded geometry-fusion weight."""
 
     min_confidence = ESTIMATOR_PROFILE["line_target_min_confidence"]
     if line_confidence < min_confidence:
@@ -170,14 +150,7 @@ def _line_weight(line_confidence: float) -> float:
 def _line_target_trust(
     obs: PerceptionObs, timestamp: float, red_environment: bool
 ) -> float:
-    """计算白线目标是否足以进入主几何链路。
-
-    功能：把白线置信度、offset 形态和 road mask 质量合成融合权重。
-    参数：`obs` 是感知结果，`timestamp` 是当前时间，`red_environment` 表示 complex 红色场地。
-    返回：`[0, 1]` 的融合强度。
-    逻辑：普通帧只接收小 offset 白线；发车短窗口接收右侧中等 offset 白线。
-    road mask 过宽/低置信时白线权重更高，避免假 road center 压过真实虚线。
-    """
+    """Gate lane evidence by confidence, geometry, scene, and road-mask quality."""
 
     base = _line_weight(obs.line_confidence)
     if base <= 0.0:
@@ -214,13 +187,7 @@ def _line_target_trust(
 def _update_line_memory(
     obs: PerceptionObs, line_trust: float, timestamp: float, red_environment: bool
 ) -> float:
-    """维护发车阶段的可信白线记忆。
-
-    功能：白线短暂丢失时继续使用最近一次可信白线，避免 fake road center 抢回主目标。
-    参数：`obs` 是本帧观测，`line_trust` 是本帧白线融合强度，`timestamp` 和 `red_environment` 限制记忆窗口。
-    返回：可用于本帧的白线融合强度。
-    逻辑：只记住已经通过信任门控的右侧发车白线；窗口外或记忆耗尽后自动失效。
-    """
+    """Bridge brief startup lane gaps with a decaying trusted-line memory."""
 
     in_startup = (
         red_environment and timestamp <= ESTIMATOR_PROFILE["line_startup_until"]
@@ -263,15 +230,7 @@ def _update_line_memory(
 
 
 def _line_guidance_targets(obs: PerceptionObs) -> tuple[float, float]:
-    """把白线 offset/heading 转成主几何链路可用的方向目标。
-
-    功能：在车明显偏离白线时，让 offset 回中优先于弯中斜率。
-    参数：`obs` 提供白线 offset 和 heading。
-    返回：削弱后的 `line_heading` 与 `projected_lookahead`。
-    逻辑：R027 第一个左弯里，白线在车右侧（offset>0）但虚线向左弯（heading<0）。
-    若直接融合 heading/lookahead，会继续左打并撞左栏。offset 足够大且与 heading 反号时，
-    heading 只作弱参考，lookahead 保持在 offset 同侧，用于把车先拉回白线附近。
-    """
+    """Prefer centering over line slope when offset and heading disagree."""
 
     line_offset = clamp(float(obs.line_offset), -1.0, 1.0)
     line_heading = clamp(float(obs.line_heading), -1.0, 1.0)
@@ -298,7 +257,7 @@ def _apply_line_target(
     obs: PerceptionObs,
     line_trust: float,
 ) -> tuple[float, float, float]:
-    """白线可信时，把道路中心估计融合到白线目标上。"""
+    """Blend trusted lane targets into road-derived geometry."""
 
     if line_trust <= 0.0:
         return lateral_error, heading_error, lookahead_error
@@ -329,13 +288,7 @@ def _apply_line_target(
 def _line_only_track(
     obs: PerceptionObs, timestamp: float, red_environment: bool, line_trust: float
 ) -> TrackState:
-    """在 road mask 不可信但白线可信时生成路线状态。
-
-    功能：避免 fake road center 把车带到路外；无可靠 road 时仍让车朝白线回中。
-    参数：`obs` 提供白线，`timestamp` 是当前时间，`red_environment` 表示场地，`line_trust` 是融合强度。
-    返回：非 lost 的 `TrackState`。
-    逻辑：只用白线 offset/heading 生成近处和前瞻目标，边界余量沿用上一帧，曲率收 0。
-    """
+    """Construct a conservative track state when lane evidence outlives the road mask."""
 
     del timestamp
     confidence = clamp(
@@ -393,13 +346,7 @@ def _line_only_track(
 
 
 def _fit_centerline(progress: np.ndarray, x_norm: np.ndarray) -> tuple[np.ndarray, int]:
-    """拟合归一化中心线。
-
-    功能：用 progress 作为自变量拟合 `x_norm`。
-    参数：`progress` 是前后进度，`x_norm` 是横向归一化中心。
-    返回：`np.polyval()` 可用的系数和拟合阶数。
-    逻辑：点数足够时用二次曲线，点数不足时用直线。
-    """
+    """Fit a quadratic centerline when supported, otherwise a line."""
 
     degree = 2 if len(progress) >= ESTIMATOR_PROFILE["poly2_min_points"] else 1
     coeffs = np.polyfit(progress, x_norm, deg=degree)
@@ -413,7 +360,7 @@ def _value_from_band(
     mask: np.ndarray,
     fallback_progress: float,
 ) -> float:
-    """从指定 progress 区间估计横向误差。"""
+    """Estimate lateral error from a progress band or fitted fallback point."""
 
     if np.any(mask):
         return float(np.median(x_norm[mask]))
@@ -421,7 +368,7 @@ def _value_from_band(
 
 
 def _heading_from_fit(coeffs: np.ndarray, degree: int) -> float:
-    """由中心线导数估计朝向误差。"""
+    """Estimate heading error from the centerline derivative."""
 
     eval_progress = ESTIMATOR_PROFILE["heading_eval_progress"]
     if degree == 2:
@@ -432,14 +379,7 @@ def _heading_from_fit(coeffs: np.ndarray, degree: int) -> float:
 
 
 def _curvature_trust(n_points: int, y_span: float, fit_score: float) -> float:
-    """计算曲率可信度。
-
-    功能：当扫描点少、纵向跨度小或拟合误差大时，二次项不可信，可信度趋近 0。
-    参数：`n_points` 是中心点数，`y_span` 是纵向像素跨度，`fit_score` 是拟合质量分。
-    返回：`[0, 1]` 的可信度。
-    逻辑：远端被遮挡时只剩近处少量聚簇点，deg-2 二次系数是数值噪声（常被钳到 ±1、
-    甚至符号相反——在全程右弯的赛道上凭空出现"满信心左弯"）。三项必须同时达标才信曲率。
-    """
+    """Down-weight curvature when points, vertical span, or fit quality are weak."""
 
     span = max(
         ESTIMATOR_PROFILE["curvature_full_points"]
@@ -460,13 +400,7 @@ def _curvature_from_fit(
     lookahead_error: float,
     trust: float,
 ) -> float:
-    """估计中心线曲率。
-
-    功能：二次拟合时用二次项，其他情况用远近误差差值兜底，并按可信度收缩。
-    参数：拟合系数、阶数、近处误差、远处误差和曲率可信度 `trust`。
-    返回：右弯为正、左弯为负的曲率值。
-    逻辑：用 `trust` 把不可信的二次系数收向 0，避免幻觉急弯；再裁剪到 `[-1, 1]`。
-    """
+    """Estimate signed curvature and shrink unreliable fits toward zero."""
 
     if degree == 2:
         value = float(coeffs[0]) * ESTIMATOR_PROFILE["curvature_gain"]
@@ -480,7 +414,7 @@ def _curvature_from_fit(
 def _fit_error_score(
     progress: np.ndarray, x_norm: np.ndarray, coeffs: np.ndarray
 ) -> float:
-    """把中心线拟合误差转换成置信度分数。"""
+    """Convert centerline residual error into a confidence score."""
 
     fitted = np.polyval(coeffs, progress)
     rmse = float(np.sqrt(np.mean((x_norm - fitted) ** 2)))
@@ -490,13 +424,7 @@ def _fit_error_score(
 def _geometry_confidence(
     obs: PerceptionObs, points: np.ndarray, y_span: float, fit_score: float
 ) -> float:
-    """计算几何置信度。
-
-    功能：综合感知置信度、点数、y 覆盖范围、拟合误差和道路宽度。
-    参数：`obs` 是感知结果，`points` 是清洗点，`y_span` 是纵向覆盖，`fit_score` 是拟合质量。
-    返回：`[0, 1]` 内的几何置信度。
-    逻辑：几何质量差时不会直接照抄感知置信度。
-    """
+    """Combine observation confidence with point, span, fit, and width quality."""
 
     obs_score = clamp(obs.confidence, 0.0, 1.0)
     point_score = clamp(
@@ -518,7 +446,7 @@ def _geometry_confidence(
 
 
 def _smooth_alpha(confidence: float) -> float:
-    """按置信度选择普通误差平滑强度。"""
+    """Choose smoothing strength from geometry confidence."""
 
     low_conf = 1.0 - clamp(confidence, 0.0, 1.0)
     alpha = (
@@ -540,7 +468,7 @@ def _smooth_alpha(confidence: float) -> float:
 def _smooth_limited(
     previous: float, current: float, alpha: float, max_delta: float
 ) -> float:
-    """平滑单个值并限制单帧变化。"""
+    """Smooth one state value and limit its frame-to-frame change."""
 
     smoothed = previous * alpha + current * (1.0 - alpha)
     delta = clamp(smoothed - previous, -max_delta, max_delta)
