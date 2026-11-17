@@ -47,7 +47,7 @@ The build commands regenerate the tracked submission files. The checks cover con
 
 [`experiments/runs.csv`](experiments/runs.csv), the [experiment notes](experiments/notes.md), and the [report](experiments/report.md) record course runs, including multi-car scenarios. These are historical results. A new build should be driven and logged again before making a current performance claim. The [experiment archive guide](experiments/README.md) explains how runs, failure cases, and figures are organized.
 
-This was a **five-person team project**. My work focused on multi-car avoidance and recovery in the shared [perception](controller/perception.py) and [policy](controller/policy.py) pipeline, using prior road-center state to stabilize ambiguous segmentation, resolving a controller-simulator interface mismatch, and building [multi-car launch](scripts/webots_multicar_run.sh) and blocked-road test procedures. I also integrated modules through shared contracts and single-file builds. The commit history and experiment records retain the team's contributions.
+This was a **five-person team project**. My work focused on multi-car avoidance and recovery in the shared [perception](controller/perception.py) and [policy](controller/policy.py) pipeline, using prior road-center state to stabilize ambiguous segmentation, resolving a controller-simulator interface mismatch, and building [multi-car launch](scripts/webots_multicar_run.sh) and blocked-road test procedures. I also integrated modules through shared contracts and single-file builds. The commit history and experiment records retain the team's contributions; [the R052 scope note](docs/r052_contribution_scope.md) separates that reviewed work from later team development.
 
 ## Where to go next
 
