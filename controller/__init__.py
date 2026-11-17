@@ -1,1 +1,1 @@
-"""AI Racer 控制器本地开发包。"""
+"""Modular local-development package for the AI Racer controller."""
