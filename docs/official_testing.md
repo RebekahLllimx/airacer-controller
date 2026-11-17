@@ -57,6 +57,10 @@ python "$AIRACER_SDK/run_local.py" \
 
 ## 6. Run Webots
 
+Before launching a world, set **Webots > Settings > General > Python command** to the same interpreter used to install `numpy` and `opencv-python`. A generic `python3` entry on macOS may resolve to the system interpreter even when the SDK launcher runs from a virtual environment. In that case the Webots car controller exits before loading the submission, typically with `ModuleNotFoundError: cv2`.
+
+Keep the Webots and SDK revisions together in the run record. A world that opens with PROTO field errors or missing SDK assets is not a valid controller result; resolve the SDK/Webots compatibility issue before reporting lap or collision metrics.
+
 List the worlds and slots supported by the installed SDK:
 
 ```bash
