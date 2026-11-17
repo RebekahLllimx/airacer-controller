@@ -29,7 +29,7 @@ def _side_vehicle_image(x0: int, x1: int):
 
 
 def _colored_vehicle_image(color_name: str):
-    """在近车 ROI 中放一块官方车身颜色。"""
+    """Place an official vehicle colour inside the near-vehicle region."""
 
     colors = {
         "car_phoenix_red": 0,
@@ -47,7 +47,7 @@ def test_no_obstacle_on_plain_road():
 
 
 def test_dark_asphalt_is_not_shadow_black_vehicle():
-    """complex 深灰路面不能被 Shadow black 颜色 profile 当成车身。"""
+    """Do not classify the complex world's dark asphalt as a black vehicle."""
 
     image = np.full((480, 640, 3), (80, 72, 63), dtype=np.uint8)
     assert detect_near_vehicle_obstacle(image) is False
@@ -87,7 +87,7 @@ def test_detects_official_colored_vehicle_blocks():
 
 
 def test_saturated_background_is_not_a_vehicle():
-    """红色场地和天空这类高饱和大块不能触发近障碍。"""
+    """Do not classify large saturated ground or sky regions as obstacles."""
 
     image = np.full((480, 640, 3), 85, dtype=np.uint8)
     image[250:430, 80:560] = (255, 178, 102)

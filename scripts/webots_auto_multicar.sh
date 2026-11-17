@@ -1,14 +1,8 @@
 #!/usr/bin/env bash
-# 无人值守 6 车 Webots 实跑 + 看门狗：后台启动 Webots，监控控制日志增长，
-# 到达硬超时 或 日志静止（比赛结束但 Webots 没自动退）即杀进程收尾。
-# 供 AI 自跑（用户睡觉时）用：跑完日志留在 .tmp/multicar/，AI 离线分析。
-#
-# 用法：
+# Run a bounded unattended multi-car session with log-stall monitoring.
 #   bash scripts/webots_auto_multicar.sh <world> <max_sec> [idle_sec] [ncars]
 #   bash scripts/webots_auto_multicar.sh complex 300
-#   bash scripts/webots_auto_multicar.sh basic 70 20 1      # 探路：单车短跑
 #
-# 产物同 webots_day_multicar.sh：.tmp/multicar/{control,contact}_<world>_car1.jsonl 等
 set -uo pipefail
 
 SDK="${AIRACER_SDK:?Set AIRACER_SDK to the official SDK directory}"
@@ -16,7 +10,8 @@ WORLD=${1:-complex}
 MAX=${2:-300}
 IDLE=${3:-25}
 NCARS=${4:-6}
-OPP_SPEED_SCALE=${5:-1.0}   # <1 = 慢速对手（追上并超车的纯超车测试）
+OPP_SPEED_SCALE=${5:-1.0}
+
 
 pkill -f webots 2>/dev/null || true
 pkill -f run_local 2>/dev/null || true
@@ -25,15 +20,12 @@ sleep 1
 rm -rf .tmp/multicar
 mkdir -p .tmp/multicar/frames_${WORLD}_car1 .tmp/multicar/webots_console
 
-# 我方 car_1 debug（控制日志 + 抽帧）
 python scripts/build_submission.py --mode with_other_cars \
   --debug-log ".tmp/multicar/control_${WORLD}_car1.jsonl" \
   --dump-frames ".tmp/multicar/frames_${WORLD}_car1" --dump-frame-stride 10 \
   --out .tmp/multicar/team_controller_car1_debug.py || exit 1
-# 对手普通构建（无 debug I/O）
 python scripts/build_submission.py --mode with_other_cars \
   --out .tmp/multicar/team_controller_opp.py || exit 1
-# 可选：给对手追加速度缩放包装（慢速对手=纯超车测试）。control 后定义者生效。
 if [[ "$OPP_SPEED_SCALE" != "1.0" ]]; then
   cat >> .tmp/multicar/team_controller_opp.py <<PYEOF
 
@@ -48,8 +40,6 @@ export AIRACER_CONTROLLER_CONSOLE_LOG_DIR="$PWD/.tmp/multicar/webots_console"
 export AIRACER_CONTACT_LOG=1
 export AIRACER_CONTACT_LOG_PATH="$PWD/.tmp/multicar/contact_${WORLD}_car1.jsonl"
 
-# telemetry.jsonl 是 append 累积的；删掉旧文件，确保本次跑出的是单段干净 telemetry，
-# 供 scripts/analyze_multicar_kpi.py 直接消费名次/超车/互挤等 KPI。
 REC="$SDK/.local/recordings"
 rm -f "$REC/telemetry.jsonl" "$REC/metadata.json" 2>/dev/null || true
 
@@ -87,11 +77,10 @@ fsize=$(stat -f%z "$LOG" 2>/dev/null || echo 0)
 frames=$(wc -l < "$LOG" 2>/dev/null || echo 0)
 echo "[auto] DONE world=$WORLD elapsed=${elapsed}s control_log_bytes=$fsize control_frames=$frames"
 
-# 收集 supervisor 产物（全车位姿 + 官方名次/碰撞）并打印多车 KPI。
 cp -f "$REC/telemetry.jsonl" ".tmp/multicar/telemetry_${WORLD}.jsonl" 2>/dev/null || true
 cp -f "$REC/metadata.json" ".tmp/multicar/metadata_${WORLD}.json" 2>/dev/null || true
 if [[ -f ".tmp/multicar/telemetry_${WORLD}.jsonl" ]]; then
-  echo "[auto] ----- 多车 KPI -----"
+  echo "[auto] ----- multi-car KPI -----"
   python scripts/analyze_multicar_kpi.py ".tmp/multicar/telemetry_${WORLD}.jsonl" \
     --metadata ".tmp/multicar/metadata_${WORLD}.json" --team ours || true
 fi

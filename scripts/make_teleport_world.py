@@ -1,11 +1,4 @@
-"""生成 Webots 跳点取证 world。
-
-功能概述：从 telemetry 中取指定时间附近的车辆姿态，把原始 `.wbt` 复制成临时 world，
-并把某个 car slot 的初始位置/朝向改到该姿态。
-输入输出：输入 telemetry、源 world、目标时间和车位；输出临时 `.wbt`。
-处理流程：读取最近 telemetry 帧，换算 Webots z 轴旋转角，替换 DEF 车辆块内的
-translation/rotation 字段。
-"""
+"""Create a temporary Webots world with a car moved to a recorded pose."""
 
 from __future__ import annotations
 
@@ -25,13 +18,7 @@ DEFAULT_WORLDS = {
 
 
 def _load_pose(telemetry: Path, target_time: float, team_id: str | None = None) -> dict:
-    """从 telemetry 中读取最接近目标时间的一帧车辆姿态。
-
-    参数：`telemetry` 是 supervisor 写出的 JSONL；`target_time` 是目标仿真时间；
-        `team_id` 可限定队伍，默认取第一辆车。
-    返回：包含 `t/x/y/heading/speed/status` 的字典。
-    逻辑：逐行扫描即可，telemetry 规模不大；按时间差选最近帧。
-    """
+    """Return the recorded vehicle pose nearest ``target_time``."""
 
     best: dict | None = None
     best_gap = float("inf")
@@ -63,12 +50,12 @@ def _load_pose(telemetry: Path, target_time: float, team_id: str | None = None) 
                     best_gap = gap
                 break
     if best is None:
-        raise ValueError(f"telemetry 中找不到车辆姿态: {telemetry}")
+        raise ValueError(f"no vehicle pose found in telemetry: {telemetry}")
     return best
 
 
 def _replace_field(block: str, field: str, value: str) -> str:
-    """替换或插入 Webots 节点块中的单行字段。"""
+    """Replace or insert a single-line field in a Webots node block."""
 
     pattern = re.compile(rf"(?m)^(\s*){re.escape(field)}\s+.+$")
     match = pattern.search(block)
@@ -77,19 +64,19 @@ def _replace_field(block: str, field: str, value: str) -> str:
         return pattern.sub(f"{indent}{field} {value}", block, count=1)
     open_brace = block.find("{")
     if open_brace < 0:
-        raise ValueError("车辆节点块缺少左花括号")
+        raise ValueError("vehicle node has no opening brace")
     insert_at = block.find("\n", open_brace)
     if insert_at < 0:
-        raise ValueError("车辆节点块不是多行格式")
+        raise ValueError("vehicle node is not multiline")
     return block[: insert_at + 1] + f"  {field} {value}\n" + block[insert_at + 1 :]
 
 
 def _find_def_block(source: str, def_name: str) -> tuple[int, int, str]:
-    """定位指定 DEF 节点的花括号块。"""
+    """Locate a named DEF node and its balanced brace block."""
 
     match = re.search(rf"\bDEF\s+{re.escape(def_name)}\s+\w+\s*\{{", source)
     if not match:
-        raise ValueError(f"world 中找不到 DEF {def_name}")
+        raise ValueError(f"DEF {def_name} not found in world")
     start = match.start()
     index = source.find("{", match.start())
     depth = 0
@@ -101,17 +88,11 @@ def _find_def_block(source: str, def_name: str) -> tuple[int, int, str]:
             depth -= 1
             if depth == 0:
                 return start, pos + 1, source[start : pos + 1]
-    raise ValueError(f"DEF {def_name} 节点花括号未闭合")
+    raise ValueError(f"DEF {def_name} has unbalanced braces")
 
 
 def build_teleport_world(source_world: Path, output_world: Path, car_slot: str, pose: dict, z: float) -> None:
-    """写出临时跳点 world。
-
-    参数：`source_world` 是原始赛道；`output_world` 是临时 world；`car_slot` 是 DEF 名；
-        `pose` 来自 telemetry；`z` 是车体初始高度。
-    返回：无。
-    逻辑：telemetry heading 与 Webots z 轴 rotation 的符号相反，故 rotation angle = -heading。
-    """
+    """Write a temporary world with one vehicle translated and rotated."""
 
     source = source_world.read_text(encoding="utf-8")
     start, end, block = _find_def_block(source, car_slot)
@@ -123,19 +104,17 @@ def build_teleport_world(source_world: Path, output_world: Path, car_slot: str, 
 
 
 def parse_args() -> argparse.Namespace:
-    """解析命令行参数。"""
+    """Parse command-line arguments."""
 
     parser = argparse.ArgumentParser(
-        description="Create a temporary Webots world with one car moved to a chosen pose. "
-                    "姿态来源二选一：--time 从 telemetry 取历史帧，或 --x/--y/--heading 手动指定。"
-                    "支持链式：--world 可传上一步生成的 .wbt，逐个车位摆位（如造对手斜停场景）。")
-    parser.add_argument("--world", default="complex", help="basic/complex 或 .wbt 路径（可传上一步输出以链式摆多车）")
+        description="Create a temporary Webots world from telemetry or an explicit pose.")
+    parser.add_argument("--world", default="complex", help="basic, complex, or a .wbt path")
     parser.add_argument("--telemetry", type=Path, default=DEFAULT_TELEMETRY)
-    parser.add_argument("--time", type=float, default=None, help="从 telemetry 取该时刻姿态（与 --x/--y/--heading 二选一）")
-    parser.add_argument("--team-id", default=None, help="可选：限定 telemetry 中的 team_id")
-    parser.add_argument("--x", type=float, default=None, help="手动指定世界坐标 x（需同时给 --y/--heading）")
-    parser.add_argument("--y", type=float, default=None, help="手动指定世界坐标 y")
-    parser.add_argument("--heading", type=float, default=None, help="手动指定朝向（弧度，telemetry 口径，左负右正）")
+    parser.add_argument("--time", type=float, default=None, help="Simulation time to retrieve from telemetry")
+    parser.add_argument("--team-id", default=None, help="Optional telemetry team ID")
+    parser.add_argument("--x", type=float, default=None, help="Explicit world x; requires y and heading")
+    parser.add_argument("--y", type=float, default=None, help="Explicit world y")
+    parser.add_argument("--heading", type=float, default=None, help="Explicit telemetry-frame heading in radians")
     parser.add_argument("--car-slot", default="car_1")
     parser.add_argument("--z", type=float, default=0.4)
     parser.add_argument("--out", type=Path, required=True)
@@ -144,7 +123,7 @@ def parse_args() -> argparse.Namespace:
 
 
 def main() -> int:
-    """脚本入口。"""
+    """Create the requested temporary world."""
 
     args = parse_args()
     source_world = DEFAULT_WORLDS.get(args.world, Path(args.world).expanduser())
@@ -154,7 +133,7 @@ def main() -> int:
     explicit = args.x is not None or args.y is not None or args.heading is not None
     if explicit:
         if None in (args.x, args.y, args.heading):
-            print("[error] 手动姿态需同时给 --x --y --heading")
+            print("[error] explicit pose requires --x, --y, and --heading")
             return 2
         pose = {"t": 0.0, "x": float(args.x), "y": float(args.y),
                 "heading": float(args.heading), "speed": 0.0, "status": "manual"}
@@ -162,7 +141,7 @@ def main() -> int:
         telemetry = args.telemetry.expanduser().resolve()
         pose = _load_pose(telemetry, args.time, team_id=args.team_id)
     else:
-        print("[error] 必须提供 --time（从 telemetry 取）或 --x/--y/--heading（手动指定）")
+        print("[error] provide --time or an explicit --x/--y/--heading pose")
         return 2
 
     build_teleport_world(source_world, output_world, args.car_slot, pose, args.z)

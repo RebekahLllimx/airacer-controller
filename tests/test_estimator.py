@@ -125,8 +125,6 @@ def test_estimator_outputs_stay_in_range_for_extreme_points():
 
 
 def test_trusted_line_state_influences_main_target():
-    # road mask 容易把护栏外低饱和区域当路；可信白线应进入主几何目标，
-    # 不能只作为最终舵角上的小修正。
     reset_estimator_state()
     obs = make_obs(lambda progress: 0.0)
     obs.line_offset = 0.24
@@ -162,8 +160,6 @@ def test_line_only_track_when_road_confidence_is_low():
 
 
 def test_offcenter_line_is_accepted_outside_startup_window():
-    # Phase 2-C/R027：第一个左弯入口，车已偏到中心线左侧，真实白线 offset 会到 +0.6~+0.7。
-    # Phase 1 已用 road-context 拒绝护栏后，主几何链路必须接纳这种 off-center 白线用于回中。
     reset_estimator_state()
     obs = make_obs(lambda progress: 0.0, confidence=0.02)
     obs.debug_flags = 32
@@ -179,8 +175,6 @@ def test_offcenter_line_is_accepted_outside_startup_window():
 
 
 def test_conflicting_line_heading_keeps_offset_recenter_priority():
-    # R027：第一个左弯里白线在右侧（offset>0，车应右回中），但虚线斜率/远处弯向为负。
-    # 主链路不能让 line_heading 把 lookahead/heading 全部拉成继续左打。
     reset_estimator_state()
     obs = make_obs(lambda progress: 0.0, confidence=0.02)
     obs.debug_flags = 32
@@ -197,8 +191,6 @@ def test_conflicting_line_heading_keeps_offset_recenter_priority():
 
 
 def test_moderate_offset_with_extreme_left_heading_still_recenters():
-    # R028：放宽弯中虚线连续性后，稀疏曲线可能给出很强的负 heading。
-    # 只要 offset 已表明线在右侧，主链路仍应保留右向回中，不让 heading 把 lookahead 拉到左侧。
     reset_estimator_state()
     obs = make_obs(lambda progress: 0.0, confidence=0.02)
     obs.debug_flags = 32

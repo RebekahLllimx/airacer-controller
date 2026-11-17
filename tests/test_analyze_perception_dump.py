@@ -68,7 +68,6 @@ def test_overlay_at_forces_overlay_on_non_lost_frame(tmp_path):
     control_log.write_text(json.dumps({"t": 0.096}) + "\n", encoding="utf-8")
     overlay_dir = tmp_path / "overlays"
 
-    # 这是一帧正常（未丢线）画面：默认模式不会出 overlay，但 --at 指定后必须强制出图。
     default_metrics = analyze_dump(frame_dir, control_log, overlay_dir=overlay_dir)
     assert default_metrics["overlay_paths"] == []
 

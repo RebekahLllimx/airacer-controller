@@ -72,7 +72,7 @@ def test_main_reports_empty_telemetry(tmp_path, monkeypatch, capsys):
     monkeypatch.setattr(sys, "argv", ["analyze_telemetry.py", "--telemetry", str(path), "--no-archive"])
 
     assert analyze_telemetry.main() == 1
-    assert "未解析到任何车辆帧" in capsys.readouterr().out
+    assert "no vehicle frames parsed" in capsys.readouterr().out
 
 
 def test_main_uses_latest_run_when_telemetry_is_interleaved(tmp_path, monkeypatch, capsys):
@@ -88,4 +88,4 @@ def test_main_uses_latest_run_when_telemetry_is_interleaved(tmp_path, monkeypatc
     assert analyze_telemetry.main() == 0
     out = capsys.readouterr().out
     assert "interleaved" in out
-    assert "1 帧" in out
+    assert "1 frames" in out

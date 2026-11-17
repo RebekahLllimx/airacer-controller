@@ -40,17 +40,17 @@ def _row(
 
 def test_decode_debug_flags_names_known_bits():
     assert decode_debug_flags(1 | 2 | 4 | 8 | 16 | 32) == [
-        "有效扫描线过少",
-        "用了边缘fallback",
-        "mask填充率极端",
-        "左右近处中心偏差大",
-        "左右置信度接近",
-        "红色环境",
+        "too few valid scan lines",
+        "edge fallback used",
+        "extreme mask fill ratio",
+        "left/right near-centre mismatch",
+        "similar left/right confidence",
+        "red environment",
     ]
 
 
 def test_decode_debug_flags_keeps_unknown_bits():
-    assert decode_debug_flags(64) == ["未知位64"]
+    assert decode_debug_flags(64) == ["unknown bit 64"]
 
 
 def test_collect_lost_diagnostics_segments_flags_and_entry_modes():
@@ -126,7 +126,7 @@ def test_analyze_file_rejects_empty_log(tmp_path, capsys):
     path.write_text("", encoding="utf-8")
 
     assert analyze_control_log.analyze_file(path) == 1
-    assert "日志为空" in capsys.readouterr().out
+    assert "log is empty" in capsys.readouterr().out
 
 
 def test_main_accepts_directory_input(tmp_path, monkeypatch, capsys):
@@ -137,4 +137,4 @@ def test_main_accepts_directory_input(tmp_path, monkeypatch, capsys):
     assert analyze_control_log.main() == 0
     out = capsys.readouterr().out
     assert "control_a.jsonl" in out
-    assert "lost 帧=0/1" in out
+    assert "lost frames=0/1" in out

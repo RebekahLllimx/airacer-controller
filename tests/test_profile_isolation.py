@@ -27,11 +27,9 @@ def test_no_other_cars_perception_skips_opponent_and_motion():
     p = get_profile("no_other_cars")
     extract_observation(img, img, 0.0, profile=p)
     obs = extract_observation(img, img, 0.032, profile=p)
-    # 单车不做对手检测
     assert obs.near_obstacle is False
     assert obs.obstacle_x == 0.0
     assert obs.obstacle_size == 0.0
-    # 单车不算 frame_motion（保持默认 100 = 视作在动，motion-stall 永不触发）
     assert obs.frame_motion >= 100.0
 
 
@@ -44,12 +42,10 @@ def test_with_other_cars_perception_detects_opponent_and_motion():
     assert obs.near_obstacle is True
     assert abs(obs.obstacle_x) < 0.15
     assert obs.obstacle_size > 0.0
-    # 两帧相同 → frame_motion≈0（真在算）
     assert obs.frame_motion < 1.0
 
 
 def test_profile_none_keeps_backward_compatible_detection():
-    # 不传 profile（测试/replay 直接调用）退回旧行为：按全局开关跑检测。
     img = _obstacle_image()
     reset_frame_motion_state()
     obs = extract_observation(img, img, 0.0)
@@ -57,8 +53,6 @@ def test_profile_none_keeps_backward_compatible_detection():
 
 
 def test_no_other_cars_policy_never_reverses_or_force_escapes():
-    # 即使喂一个会让 with_other_cars 倒车/触发 force_escape 的卡死/丢线场景，
-    # no_other_cars 也不应输出负速度。
     pinned = TrackState(
         lateral_error=-0.62, heading_error=0.14, curvature=0.09,
         lookahead_error=-0.52, confidence=0.83, lost=False, red_environment=False,
@@ -73,11 +67,12 @@ def test_no_other_cars_policy_never_reverses_or_force_escapes():
         for _ in range(200):
             t += 0.032
             cmd = decide_control(track, t, mode="no_other_cars")
-            assert cmd.speed >= 0.0  # 绝不倒车
+            assert cmd.speed >= 0.0
+
 
 
 def test_with_other_cars_motion_stall_triggers_reverse_escape_on_jitter():
-    """轻微画面抖动但车身不前进时，多车 profile 应主动倒车脱困。"""
+    """The traffic profile should reverse when images move but the car remains blocked."""
 
     stalled = TrackState(
         lateral_error=0.05,

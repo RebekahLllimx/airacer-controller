@@ -15,9 +15,11 @@ PUBLIC_TARGETS = (
     ROOT / "baselines",
     ROOT / "docs",
     ROOT / "experiments",
+    ROOT / "scripts",
     ROOT / "submissions",
+    ROOT / "tests",
 )
-TEXT_SUFFIXES = {".csv", ".json", ".jsonl", ".md", ".py", ".rst", ".txt", ".yaml", ".yml"}
+TEXT_SUFFIXES = {".csv", ".json", ".jsonl", ".md", ".py", ".rst", ".sh", ".txt", ".yaml", ".yml"}
 HAN = re.compile(r"[\u3400-\u9fff]")
 PRIVATE_PATH = re.compile(r"(?:/Users/[^/\s]+|[A-Za-z]:\\Users\\[^\\\s]+)")
 
@@ -39,6 +41,8 @@ def iter_text_files() -> list[Path]:
 def main() -> int:
     findings: list[str] = []
     for path in iter_text_files():
+        if path == Path(__file__).resolve():
+            continue
         text = path.read_text(encoding="utf-8", errors="replace")
         relative = path.relative_to(ROOT)
         if HAN.search(text):

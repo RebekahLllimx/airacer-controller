@@ -1,12 +1,8 @@
-"""从 Webots `.wbt` 解析赛道几何，供顶视图还原成"人在 Webots 里看到的"样子。
+"""Parse the Webots ground and road network needed for top-down plots.
 
-功能概述：读取 track_*.wbt，抽出红色地面（Solid name "ground" 的 Box）和路面网络
-    （Road 直道的 wayPoints 折线 + CurvedRoadSegment 弧线），换算到世界坐标，
-    返回可直接用 matplotlib 画的多边形/折线。只解析渲染需要的字段，不依赖 Webots。
-
-坐标约定：世界系 x/y（与 telemetry 同一套），节点 translation + rotation(绕 z) 把局部
-    几何摆到世界里。CurvedRoadSegment 默认 totalAngle=π/2、起点在局部原点、初始朝 +x、
-    向左（CCW）转，曲率中心在 (0, R)。
+The parser supports ``Road`` polylines and ``CurvedRoadSegment`` arcs, applies
+their z-axis transforms, and returns polygons in the telemetry world frame. It
+only reads fields required for rendering and does not depend on Webots.
 """
 
 from __future__ import annotations
@@ -25,12 +21,13 @@ _NODE_RE = re.compile(r"^(Road|CurvedRoadSegment|Solid)\s*\{", re.MULTILINE)
 
 
 def _node_blocks(text: str):
-    """逐个产出顶层节点块 (node_type, block_text)，按花括号配对切。"""
+    """Yield top-level node blocks by matching braces."""
 
     for m in _NODE_RE.finditer(text):
         node_type = m.group(1)
         depth = 0
-        i = m.end() - 1  # 指向 '{'
+        i = m.end() - 1
+
         start = i
         while i < len(text):
             ch = text[i]
@@ -55,7 +52,7 @@ def _translation(block: str) -> tuple[float, float]:
 
 
 def _rotation_z(block: str) -> float:
-    """返回绕 z 轴的旋转角（弧度）；非 z 轴或缺省按 0。"""
+    """Return the z-axis rotation in radians, or zero for unsupported axes."""
 
     m = re.search(r"\brotation\s+(-?\d+\.?\d*)\s+(-?\d+\.?\d*)\s+(-?\d+\.?\d*)\s+(-?\d+\.?\d*)", block)
     if not m:
@@ -70,7 +67,8 @@ def _waypoints(block: str) -> list[tuple[float, float]]:
         return []
     nums = [float(tok) for tok in re.findall(r"-?\d+\.?\d*", m.group(1))]
     pts = []
-    for i in range(0, len(nums) - 2, 3):  # 每个点是 x y z
+    for i in range(0, len(nums) - 2, 3):
+
         pts.append((nums[i], nums[i + 1]))
     return pts
 
@@ -82,11 +80,11 @@ def _apply(pt: tuple[float, float], angle: float, tx: float, ty: float) -> tuple
 
 
 def _curve_centerline(radius: float, total_angle: float, n: int = 24) -> list[tuple[float, float]]:
-    """局部弧线中心线，按 Webots CurvedRoadSegment 原始公式：
+    """Construct a local arc centreline using the Webots segment formula.
 
         wayPoint_i = (radius·sin(θ), radius·cos(θ)),  θ = i·totalAngle/subdivision
 
-    即曲率中心在局部原点，起点 (0, R)、终点 (R, 0)。
+    The curvature centre is the local origin, from ``(0, R)`` to ``(R, 0)``.
     """
 
     return [(radius * math.sin(total_angle * k / n), radius * math.cos(total_angle * k / n))
@@ -94,7 +92,7 @@ def _curve_centerline(radius: float, total_angle: float, n: int = 24) -> list[tu
 
 
 def _offset_polygon(centerline: list[tuple[float, float]], width: float) -> list[tuple[float, float]]:
-    """把中心线折线按 width 向两侧偏移成闭合路面多边形。"""
+    """Offset a centreline on both sides to form a closed road polygon."""
 
     half = width * 0.5
     n = len(centerline)
@@ -112,7 +110,8 @@ def _offset_polygon(centerline: list[tuple[float, float]], width: float) -> list
             dx = centerline[i + 1][0] - centerline[i - 1][0]
             dy = centerline[i + 1][1] - centerline[i - 1][1]
         norm = math.hypot(dx, dy) or 1.0
-        nx, ny = -dy / norm, dx / norm  # 左法线
+        nx, ny = -dy / norm, dx / norm
+
         px, py = centerline[i]
         left.append((px + nx * half, py + ny * half))
         right.append((px - nx * half, py - ny * half))
@@ -120,10 +119,7 @@ def _offset_polygon(centerline: list[tuple[float, float]], width: float) -> list
 
 
 def parse_world(world: str | Path):
-    """解析赛道，返回 {"ground": [...], "roads": [polygon,...], "extent": (xmin,xmax,ymin,ymax)}。
-
-    ground: [(cx, cy, sx, sy, (r,g,b))]；roads: 每条是闭合路面多边形点列表。
-    """
+    """Return ground boxes, closed road polygons, and the world extent."""
 
     path = Path(DEFAULT_WORLDS.get(str(world), str(world))).expanduser()
     text = path.read_text(encoding="utf-8")

@@ -1,9 +1,8 @@
-"""Supervisor 遥测汇总脚本（本地调试用）。
+"""Summarize large supervisor telemetry files without loading them into memory.
 
-功能概述：把 supervisor 写出的大体量 `telemetry.jsonl` 压成约 40 行可读汇总。
-输入输出：输入 `telemetry.jsonl`（默认读 SDK 的 `.local/recordings/`），输出位置/速度/爬行/事件统计。
-处理流程：流式解析每帧 → 取目标车 → 统计速度分布、低速爬行段、近停点、事件 → 可选归档到 repo。
-设计目的：原始文件可达十几万行，绝不整体读入上下文；本脚本只打印聚合结果，token 成本极低。
+The report covers position, speed, low-speed episodes, progress, and events for
+one vehicle. It can also archive the raw run under the repository's ignored
+``.tmp/recordings`` directory.
 """
 
 from __future__ import annotations
@@ -31,7 +30,7 @@ def _pct(values: list[float], q: float) -> float:
 
 
 def _load_car_frames(path: Path, team_id: str | None) -> tuple[list[dict], list[tuple[float, dict]]]:
-    """流式读取遥测，返回目标车的逐帧记录与全部事件。"""
+    """Stream telemetry and return frames for one car plus all recorded events."""
 
     frames: list[dict] = []
     events: list[tuple[float, dict]] = []
@@ -76,13 +75,7 @@ def _load_car_frames(path: Path, team_id: str | None) -> tuple[list[dict], list[
 
 
 def _split_runs(frames: list[dict]) -> list[list[dict]]:
-    """按时间戳回退把交错的遥测切成多段 run。
-
-    功能：supervisor 的 telemetry.jsonl 可能累积多次 run（孤儿进程/未截断），导致 t 非单调。
-    参数：`frames` 是按文件顺序的逐帧记录。
-    返回：每段为一次 run（t 单调递增）；最后一段即最近一次 run。
-    逻辑：遇到 t 比上一帧小就切段。
-    """
+    """Split an appended telemetry file whenever its timestamp moves backward."""
 
     segments: list[list[dict]] = []
     current: list[dict] = []
@@ -100,7 +93,7 @@ def _split_runs(frames: list[dict]) -> list[list[dict]]:
 
 
 def _read_metadata_frames(telemetry_path: Path) -> int | None:
-    """读取同目录 metadata.json 的 total_frames，用于完整性交叉校验。"""
+    """Read ``metadata.json`` for a frame-count integrity check when available."""
 
     meta = telemetry_path.parent / "metadata.json"
     if not meta.is_file():
@@ -112,7 +105,7 @@ def _read_metadata_frames(telemetry_path: Path) -> int | None:
 
 
 def _longest_low_speed(frames: list[dict], thresh: float) -> dict | None:
-    """找最长的连续低速（<thresh）爬行段。"""
+    """Return the longest contiguous episode below ``thresh``."""
 
     best = None
     run_start = None
@@ -152,34 +145,33 @@ def _archive(src_dir: Path, label: str) -> Path:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="汇总 supervisor telemetry.jsonl。")
+    parser = argparse.ArgumentParser(description="Summarize supervisor telemetry.jsonl.")
     parser.add_argument("--telemetry", type=Path, default=DEFAULT_TELEMETRY,
-                        help=f"telemetry.jsonl 路径（默认 {DEFAULT_TELEMETRY}）")
-    parser.add_argument("--team-id", default=None, help="目标车 team_id（默认取每帧第一辆车）")
+                        help=f"Telemetry path (default: {DEFAULT_TELEMETRY})")
+    parser.add_argument("--team-id", default=None, help="Target team ID; defaults to the first car")
     parser.add_argument("--archive", default=None,
-                        help="归档标签：把本次原始遥测复制到 .tmp/recordings/<标签>/ 留档")
-    parser.add_argument("--no-archive", action="store_true", help="不自动归档")
+                        help="Archive label under .tmp/recordings/<label>")
+    parser.add_argument("--no-archive", action="store_true", help="Do not archive the raw run")
     args = parser.parse_args()
 
     path = args.telemetry
     if not path.is_file():
-        print(f"[error] 找不到遥测文件: {path}")
+        print(f"[error] telemetry file not found: {path}")
         return 1
 
     all_frames, events = _load_car_frames(path, args.team_id)
     if not all_frames:
-        print(f"[error] 未解析到任何车辆帧（team_id={args.team_id}）")
+        print(f"[error] no vehicle frames parsed (team_id={args.team_id})")
         return 1
 
-    # 完整性：telemetry.jsonl 可能跨 run 残留，只取最近一段，并与 metadata 交叉校验。
     runs = _split_runs(all_frames)
     frames = runs[-1]
     meta_frames = _read_metadata_frames(path)
     integrity = "clean"
     if len(runs) > 1:
-        integrity = f"interleaved（检测到 {len(runs)} 段 run，仅用最后一段）"
+        integrity = f"interleaved ({len(runs)} runs detected; using the latest)"
     elif meta_frames is not None and abs(len(frames) - meta_frames) > 2:
-        integrity = f"suspect（本段 {len(frames)} 帧 vs metadata.total_frames {meta_frames}）"
+        integrity = f"suspect ({len(frames)} frames vs metadata.total_frames={meta_frames})"
 
     speeds = [f["speed"] for f in frames]
     moving = [s for s in speeds if s > 0.05]
@@ -192,7 +184,6 @@ def main() -> int:
     n = len(frames)
     frac_lt = lambda th: sum(1 for s in speeds if s < th) / n
 
-    # 时间分桶速度剖面（10 段）
     bins = 10
     profile = []
     for b in range(bins):
@@ -210,39 +201,39 @@ def main() -> int:
         label = args.archive or datetime.now().strftime("run_%Y%m%d_%H%M%S")
         archive_dir = _archive(path.parent, label)
 
-    print("================ TELEMETRY 汇总 ================")
-    print(f"源文件     : {path}")
+    print("================ TELEMETRY SUMMARY ================")
+    print(f"source       : {path}")
     if archive_dir:
-        print(f"已归档     : {archive_dir}")
-    print(f"完整性     : {integrity}"
+        print(f"archive      : {archive_dir}")
+    print(f"integrity    : {integrity}"
           + (f"  (metadata.total_frames={meta_frames})" if meta_frames is not None else ""))
-    print(f"帧数/时长  : {n} 帧, t={t0:.2f}→{t1:.2f} ({span:.1f}s)")
-    print(f"行驶距离   : {dist:.1f} (单位 = world 坐标)")
-    print(f"终点       : x={end['x']:.2f}, y={end['y']:.2f}, speed={end['speed']:.3f}, status={end['status']}")
-    print(f"圈数/进度  : lap={max_lap}, max_lap_progress={max_progress:.3f}")
+    print(f"frames/time  : {n} frames, t={t0:.2f}→{t1:.2f} ({span:.1f}s)")
+    print(f"distance     : {dist:.1f} world units")
+    print(f"final state  : x={end['x']:.2f}, y={end['y']:.2f}, speed={end['speed']:.3f}, status={end['status']}")
+    print(f"lap/progress : lap={max_lap}, max_lap_progress={max_progress:.3f}")
     p95_speed = _pct(speeds, 0.95)
     rel_thresh = 0.15 * p95_speed
     rel_frac = sum(1 for s in speeds if s < rel_thresh) / n
-    print("---- 速度 (supervisor 单位, 非 0~1 命令值) ----")
+    print("---- SPEED (supervisor units, not the normalized command) ----")
     print(f"  mean={sum(speeds)/n:.3f}  median={_pct(speeds,0.5):.3f}  "
           f"p95={p95_speed:.3f}  max={max(speeds):.3f}")
-    print(f"  行进中均速(>0.05)={sum(moving)/len(moving) if moving else 0:.3f}")
-    print(f"  近停占比: <0.3={frac_lt(0.3):.2f}  <0.05={frac_lt(0.05):.2f}   "
-          f"相对爬行(<15%p95={rel_thresh:.2f})={rel_frac:.2f}")
-    print(f"  速度剖面(10段均速): {' '.join(f'{v:.2f}' for v in profile)}")
+    print(f"  moving mean (>0.05)={sum(moving)/len(moving) if moving else 0:.3f}")
+    print(f"  near-stop share: <0.3={frac_lt(0.3):.2f}  <0.05={frac_lt(0.05):.2f}   "
+          f"relative crawl (<15% of p95={rel_thresh:.2f})={rel_frac:.2f}")
+    print(f"  ten-bin mean-speed profile: {' '.join(f'{v:.2f}' for v in profile)}")
     crawl = _longest_low_speed(frames, 0.3)
     if crawl and crawl["dur"] > 1.0:
-        print(f"  最长爬行段(<0.3): {crawl['dur']:.1f}s  "
+        print(f"  longest crawl (<0.3): {crawl['dur']:.1f}s  "
               f"t={crawl['t0']:.1f}→{crawl['t1']:.1f}  "
               f"x={crawl['x0']:.1f},y={crawl['y0']:.1f} → x={crawl['x1']:.1f},y={crawl['y1']:.1f}")
-    print("---- 事件 ----")
+    print("---- EVENTS ----")
     if events:
         for t, ev in events[:20]:
             print(f"  t={t}: {ev}")
         if len(events) > 20:
-            print(f"  ... 共 {len(events)} 条事件")
+            print(f"  ... {len(events)} events total")
     else:
-        print("  （无 checkpoint/碰撞等事件）")
+        print("  (no checkpoint, collision, or finish events)")
     print("================================================")
     return 0
 

@@ -11,8 +11,10 @@ sys.path.insert(0, str(ROOT))
 from controller.params import LINE_FOLLOW_PROFILE
 from controller.perception import _camera_line_state, _stereo_line_state
 
-_ASPHALT = (82, 74, 64)        # 采样到的近处深灰沥青 BGR
-_RED_GROUND = (75, 74, 168)    # 采样到的红地 BGR
+_ASPHALT = (82, 74, 64)
+
+_RED_GROUND = (75, 74, 168)
+
 
 
 def _line_image(x_values):
@@ -25,7 +27,7 @@ def _line_image(x_values):
 
 
 def _vertical_bar_image(x_center, color, *, red_from=None):
-    """沥青底图上画一根竖直亮条（模拟护栏支柱），可选右侧填红地。"""
+    """Draw a bright barrier-like post over asphalt, optionally beside red ground."""
 
     image = np.zeros((480, 640, 3), dtype=np.uint8)
     image[:, :] = _ASPHALT
@@ -36,7 +38,7 @@ def _vertical_bar_image(x_center, color, *, red_from=None):
 
 
 def _curved_centerline_image(near_x, far_x):
-    """沥青路面里画一条连续的向某侧弯的近白中心线，两侧都是路面。"""
+    """Draw a continuous near-white centre line curving through asphalt."""
 
     image = np.zeros((480, 640, 3), dtype=np.uint8)
     image[:, :] = _ASPHALT
@@ -48,7 +50,7 @@ def _curved_centerline_image(near_x, far_x):
 
 
 def _sparse_dashed_curve_image(points):
-    """沥青路面里画稀疏虚线，用来模拟 complex 第一个左弯入口。"""
+    """Draw sparse lane dashes resembling the complex world's first left turn."""
 
     image = np.zeros((480, 640, 3), dtype=np.uint8)
     image[:, :] = _ASPHALT
@@ -58,7 +60,7 @@ def _sparse_dashed_curve_image(points):
 
 
 def _red_scene_sparse_dashed_curve_image(points):
-    """红色场地背景 + 沥青路面里的稀疏虚线，用来触发 complex 单目兜底。"""
+    """Draw sparse lane dashes on asphalt against the world's red background."""
 
     image = np.zeros((480, 640, 3), dtype=np.uint8)
     image[:, :] = _RED_GROUND
@@ -139,18 +141,18 @@ def test_red_environment_single_camera_curve_line_is_low_confidence_fallback():
 
 
 def test_bright_white_post_at_road_red_edge_is_rejected():
-    """Phase 1：弯道内侧亮白护栏支柱，外侧是红地而非路面 → 不是车道线，必须拒绝。"""
+    """Reject a bright inner barrier post when its far side is red ground."""
 
-    # 支柱中心 x≈500，右侧 486 起是红地：支柱右邻不是路面。
     image = _vertical_bar_image(500, (245, 245, 245), red_from=486)
 
     assert _camera_line_state(image, LINE_FOLLOW_PROFILE) is None
 
 
 def test_same_bright_bar_with_road_on_both_sides_is_detected():
-    """对照：同一根亮白竖条若两侧都是路面，则按车道线接受——证明是上下文（不是亮度）在做区分。"""
+    """Accept the same bright stripe when road context exists on both sides."""
 
-    image = _vertical_bar_image(500, (245, 245, 245))  # 无红地，两侧都是沥青
+    image = _vertical_bar_image(500, (245, 245, 245))
+
 
     result = _camera_line_state(image, LINE_FOLLOW_PROFILE)
 
@@ -158,16 +160,15 @@ def test_same_bright_bar_with_road_on_both_sides_is_detected():
 
 
 def test_bluish_bright_bar_rejected_by_chroma():
-    """Phase 1：很亮但偏蓝灰（色度高）的竖条 → 不是近中性白线，按色度拒绝，即使两侧是路面。"""
+    """Reject a bright blue-grey stripe whose chroma is inconsistent with a white line."""
 
-    # min 通道=150≥white_min，但色度=255-150=105 远超 white_chroma_max。
     image = _vertical_bar_image(320, (255, 180, 150))
 
     assert _camera_line_state(image, LINE_FOLLOW_PROFILE) is None
 
 
 def test_curved_centerline_in_road_is_recalled_without_inflated_offset():
-    """Phase 1：路面中间向右弯的中心线应被召回，且近处 offset 不被弯道放大。"""
+    """Recover a right-curving centre line without inflating its near-field offset."""
 
     left = _curved_centerline_image(near_x=320, far_x=372)
     right = _curved_centerline_image(near_x=320, far_x=372)
@@ -175,12 +176,14 @@ def test_curved_centerline_in_road_is_recalled_without_inflated_offset():
     offset, heading, confidence = _stereo_line_state(left, right, LINE_FOLLOW_PROFILE, timestamp=50.0)
 
     assert confidence >= LINE_FOLLOW_PROFILE["min_confidence"]
-    assert abs(offset) < 0.15   # 近处居中，offset 不被弯道外推放大
-    assert heading > 0.0        # 远处右偏 = 向右弯
+    assert abs(offset) < 0.15
+
+    assert heading > 0.0
+
 
 
 def test_dense_scan_recalls_sparse_dashes_that_legacy_rows_miss():
-    """Phase 2-A：弯道虚线稀疏成簇时，旧 5 行扫描会落在空隙里；12 行扫描应找回。"""
+    """Recover sparse curved dashes with the denser twelve-row scan pattern."""
 
     image = _sparse_dashed_curve_image([
         (460, 420),

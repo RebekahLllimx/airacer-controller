@@ -10,7 +10,7 @@ from scripts import plot_run
 
 
 def _write_telemetry(path: Path) -> None:
-    """写一小段合成 telemetry：直行加速 → 一段卡住（status 异常）→ 恢复。"""
+    """Write synthetic telemetry with acceleration, blockage, and recovery."""
 
     rows = []
     for i in range(20):
@@ -31,7 +31,7 @@ def _write_telemetry(path: Path) -> None:
 
 
 def _write_contact_log(path: Path) -> None:
-    """写三段合成撞栏接触：前两段空间接近，第三段明显远离。"""
+    """Write three contact episodes; the first two are spatially close."""
 
     rows = [
         {
@@ -83,7 +83,8 @@ def test_plot_run_writes_png(tmp_path):
         assert plot_run.main() == 0
 
     assert out.is_file()
-    assert out.stat().st_size > 1000  # 真出了一张非空 PNG
+    assert out.stat().st_size > 1000
+
 
 
 def test_contact_clusters_merge_nearby_episodes(tmp_path):
@@ -106,5 +107,5 @@ def test_plot_run_missing_telemetry_returns_error(tmp_path, capsys):
     import unittest.mock as mock
     with mock.patch.object(sys, "argv", sys_argv):
         assert plot_run.main() == 1
-    assert "找不到遥测文件" in capsys.readouterr().out
+    assert "telemetry file not found" in capsys.readouterr().out
     assert not out.exists()

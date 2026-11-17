@@ -1,11 +1,9 @@
-"""离线开环回放工具。
+"""Replay recorded stereo frames through the controller in open loop.
 
-功能概述：读取调试构建保存的左右相机帧，离线跑控制器感知、估计和策略接线。
-输入输出：输入 `frame_<t>_left.png/right.png` 成对帧，输出和 control 调试日志同 schema 的 JSONL。
-处理流程：按时间排序帧对 → reset 跨帧状态 → 执行 extract_observation/estimate_track/decide_control → 写逐帧 JSONL。
-
-限制：这是开环回放固定输入帧，只能用于筛同一段录制画面下感知/估计改动对丢线率、置信度和几何量的影响。
-它不能评估速度或控制策略效果，因为真实转向会改变后续画面，开环重放无法体现轨迹反馈。
+The output follows the controller debug-log schema, allowing perception and
+estimation revisions to be compared on identical images. Open-loop replay does
+not measure driving performance because control commands cannot change later
+frames.
 """
 
 from __future__ import annotations
@@ -29,17 +27,11 @@ import controller.policy as policy_state
 
 
 def _parse_frame_timestamp(left_path: Path) -> float:
-    """从 P2.5 存帧文件名解析时间戳。
-
-    功能：把 `frame_000012_345_left.png` 还原为 `12.345`。
-    参数：`left_path` 是左图 `.png` 路径。
-    返回：浮点时间戳。
-    逻辑：文件名中的负号写成 `m`，小数点写成 `_`；解析失败时抛出 `ValueError`。
-    """
+    """Decode a timestamp such as 12.345 from a saved left-frame filename."""
 
     stem = left_path.stem
     if not stem.startswith("frame_") or not stem.endswith("_left"):
-        raise ValueError(f"无法解析左帧文件名: {left_path.name}")
+        raise ValueError(f"cannot parse left-frame filename: {left_path.name}")
     token = stem[len("frame_"):-len("_left")]
     if token.startswith("m"):
         token = "-" + token[1:]
@@ -50,13 +42,7 @@ def _parse_frame_timestamp(left_path: Path) -> float:
 
 
 def iter_frame_pairs(frame_dir: Path) -> list[tuple[float, Path, Path]]:
-    """查找并排序左右帧对。
-
-    功能：在目录内收集调试构建生成的左右 `.png` 帧。
-    参数：`frame_dir` 是存帧目录。
-    返回：`(timestamp, left_path, right_path)` 列表，按时间升序。
-    逻辑：以左帧为主，要求同名右帧存在；缺右帧时直接跳过。
-    """
+    """Return complete left/right frame pairs sorted by timestamp."""
 
     pairs: list[tuple[float, Path, Path]] = []
     for left_path in sorted(frame_dir.glob("frame_*_left.png")):
@@ -69,13 +55,7 @@ def iter_frame_pairs(frame_dir: Path) -> list[tuple[float, Path, Path]]:
 
 
 def replay_frames(frame_dir: Path, out_path: Path, mode: str = "no_other_cars", limit: int | None = None) -> int:
-    """执行开环回放并写出 control 日志同 schema JSONL。
-
-    功能：把保存帧转成可被 `analyze_control_log.py` 直接分析的日志。
-    参数：`frame_dir` 是帧目录，`out_path` 是输出 JSONL，`mode` 是 profile，`limit` 可限制帧数。
-    返回：写出的帧数。
-    逻辑：每次回放前 reset 估计器和策略状态；单帧异常写 fallback 行并继续。
-    """
+    """Replay frames and write JSONL compatible with ``analyze_control_log.py``."""
 
     pairs = iter_frame_pairs(frame_dir)
     if limit is not None:
@@ -83,7 +63,8 @@ def replay_frames(frame_dir: Path, out_path: Path, mode: str = "no_other_cars", 
     out_path.parent.mkdir(parents=True, exist_ok=True)
     reset_estimator_state()
     reset_policy_state()
-    profile = get_profile(mode)  # 让 perception 的对手检测/光流卡死按 profile 门控
+    profile = get_profile(mode)
+
 
     written = 0
     with out_path.open("w", encoding="utf-8") as handle:
@@ -166,29 +147,29 @@ def replay_frames(frame_dir: Path, out_path: Path, mode: str = "no_other_cars", 
 
 
 def parse_args() -> argparse.Namespace:
-    """解析命令行参数。"""
+    """Parse command-line arguments."""
 
-    parser = argparse.ArgumentParser(description="离线开环回放 P2.5 保存的左右相机帧。")
-    parser.add_argument("frames", type=Path, help="包含 frame_<t>_left.png/right.png 的目录")
-    parser.add_argument("--out", type=Path, required=True, help="输出 control 同 schema JSONL")
+    parser = argparse.ArgumentParser(description="Open-loop replay of saved stereo camera frames.")
+    parser.add_argument("frames", type=Path, help="Directory containing frame_<t>_left/right.png")
+    parser.add_argument("--out", type=Path, required=True, help="Output control-schema JSONL")
     parser.add_argument("--mode", choices=("no_other_cars", "with_other_cars"), default="no_other_cars")
-    parser.add_argument("--limit", type=int, default=None, help="最多回放多少帧，默认不限")
+    parser.add_argument("--limit", type=int, default=None, help="Maximum frames to replay")
     return parser.parse_args()
 
 
 def main() -> int:
-    """脚本入口。"""
+    """Run the command-line replay."""
 
     args = parse_args()
     if not args.frames.is_dir():
-        print(f"[error] 找不到帧目录: {args.frames}")
+        print(f"[error] frame directory not found: {args.frames}")
         return 1
     written = replay_frames(args.frames, args.out, mode=args.mode, limit=args.limit)
     if written == 0:
-        print(f"[error] 没有找到完整左右帧对: {args.frames}")
+        print(f"[error] no complete stereo pairs found: {args.frames}")
         return 1
-    print(f"已回放 {written} 帧，输出: {args.out}")
-    print("说明：这是开环固定画面回放，只用于比较感知/估计输出；不能评估速度、控制策略或圈速。")
+    print(f"replayed {written} frames; output: {args.out}")
+    print("Open-loop replay compares perception and estimation only; it does not measure lap performance.")
     return 0
 
 

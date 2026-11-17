@@ -39,7 +39,7 @@ def test_normal_build_source_has_no_frame_dump_probe():
     assert "_DBG_FRAME_DIR" not in source
     assert "_DBG_FH" not in source
     assert "AIRACER_CONTROLLER_CONSOLE_LOG_DIR" not in source
-    assert "功能概述" not in source
+    assert not any("\u3400" <= char <= "\u9fff" for char in source)
     assert "\n\\\n" not in source
 
 

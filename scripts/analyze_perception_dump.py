@@ -1,8 +1,7 @@
-"""dump 帧感知丢线分析工具。
+"""Replay saved stereo frames and diagnose perception loss.
 
-功能概述：对 P2.5 保存的左右相机帧逐帧重跑 perception，验证与实车控制日志对齐，并产出丢线指标。
-输入输出：输入 `frame_<t>_left/right.png` 和 control JSONL，输出指标 JSON、终端摘要和可选 overlay 图。
-处理流程：按时间戳配对帧 → join 控制日志 → 重算 extract_observation → 统计复现误差、丢线率和中心漂移。
+The tool aligns images with a control log, reruns perception, and reports
+reproduction mismatches, loss rate, centre drift, and optional overlays.
 """
 
 from __future__ import annotations
@@ -26,11 +25,10 @@ from controller.params import OPPONENT_PROFILE
 
 
 def _opponent_debug(image: np.ndarray) -> dict | None:
-    """重算对手车身检测，返回最大候选块的像素 bbox 与归一化横向位置。
+    """Return the largest opponent candidate's bounding box and lateral position.
 
-    与 `opponent.detect_near_vehicle_obstacle_state` 的选块逻辑一致（同用 OPPONENT_PROFILE
-    阈值），只是把它选中的连通块 bbox 透出来供 overlay 画框；只用于离线取证，不进提交路径。
-    返回 None 表示该帧没有命中对手块。
+    This mirrors the submitted detector's component selection but exposes the
+    selected box for offline overlays.
     """
 
     candidate = vehicle_body_mask(image, OPPONENT_PROFILE)
@@ -105,7 +103,7 @@ def _first_center_x(obs) -> float | None:
 
 
 def _scan_debug(image: np.ndarray, timestamp: float, profile: dict) -> dict:
-    """按当前 profile 重算单侧感知调试信息。"""
+    """Recompute single-camera diagnostics for the selected profile."""
 
     enable_opp = bool(profile.get("enable_opponent", False))
     road_mask, edge_mask, _texture, mask_fill_ratio, _near_obstacle, _obstacle_x, _obstacle_size = _build_masks(
@@ -123,7 +121,6 @@ def _scan_debug(image: np.ndarray, timestamp: float, profile: dict) -> dict:
         "road_mask": road_mask,
         "edge_mask": edge_mask,
         "scan": scan,
-        # 多车 profile 下额外透出对手检测框，供 overlay 标注；单车下为 None。
         "opponent": _opponent_debug(image) if enable_opp else None,
     }
 
@@ -143,9 +140,7 @@ def _draw_side_overlay(image: np.ndarray, debug: dict) -> np.ndarray:
     if opponent is not None:
         h, w = overlay.shape[:2]
         bx, by, bw, bh = opponent["bbox"]
-        # 红框=被检测为对手车身的最大连通块。
         cv2.rectangle(overlay, (bx, by), (bx + bw, by + bh), (0, 0, 255), 2)
-        # 品红竖线=obstacle_x（对手横向位置，左负右正），policy 据此朝反侧让开。
         obs_px = int(round((opponent["obstacle_x"] * 0.5 + 0.5) * (w - 1)))
         cv2.line(overlay, (obs_px, 0), (obs_px, h - 1), (255, 0, 255), 1)
         cv2.putText(overlay, f"opp x={opponent['obstacle_x']:+.2f}", (bx, max(by - 8, 16)),
@@ -187,15 +182,7 @@ def analyze_dump(
     baseline_json: Path | None = None,
     overlay_at: list[float] | None = None,
 ) -> dict:
-    """分析 dump 帧感知结果。
-
-    功能：重算每帧 perception，统计对齐可信度、感知丢线率和相对 baseline 的中心漂移。
-    参数：`frame_dir` 是帧目录，`control_log` 是实车日志，`mode` 是控制 profile，`overlay_dir` 可保存例图；
-        `overlay_at` 给定时只为这些时间戳最近的帧出 overlay（不论是否丢线），用于报告取证；
-        为 None 时退回默认行为：自动挑前 `overlay_limit` 个丢线帧出 overlay。
-    返回：可写入 JSON 的指标字典。
-    逻辑：对齐字段先和日志比，再按 obs_points / confidence 判断感知丢线。
-    """
+    """Return frame alignment, perception-loss, drift, and overlay metrics."""
 
     pairs = _frame_pairs(frame_dir)
     control_rows = _load_control_log(control_log)
@@ -296,17 +283,17 @@ def analyze_dump(
 
 
 def _print_summary(metrics: dict) -> None:
-    print("================ PERCEPTION DUMP 分析 ================")
-    print(f"帧目录     : {metrics['frame_dir']}")
-    print(f"控制日志   : {metrics['control_log']}")
+    print("================ PERCEPTION REPLAY ================")
+    print(f"frame directory : {metrics['frame_dir']}")
+    print(f"control log     : {metrics['control_log']}")
     print(f"profile    : {metrics.get('mode', 'no_other_cars')}")
-    print(f"帧数/join  : {metrics['total_frames']} / {metrics['joined_frames']}")
-    print(f"复现差异   : {metrics['mismatch_count']} 处")
-    print(f"感知丢线率 : {metrics['perception_lost_frames']}/{metrics['total_frames']} "
+    print(f"frames/join    : {metrics['total_frames']} / {metrics['joined_frames']}")
+    print(f"mismatches     : {metrics['mismatch_count']}")
+    print(f"perception loss: {metrics['perception_lost_frames']}/{metrics['total_frames']} "
           f"({metrics['perception_lost_rate']:.3f})")
     drift = metrics["center_delta_vs_baseline"]
     if drift["count"]:
-        print(f"中心漂移   : mean={drift['mean_abs_px']:.2f}px p95={drift['p95_abs_px']:.2f}px "
+        print(f"centre drift   : mean={drift['mean_abs_px']:.2f}px p95={drift['p95_abs_px']:.2f}px "
               f"max={drift['max_abs_px']:.2f}px normal→lost={drift['normal_to_lost_regressions']}")
     if metrics["overlay_paths"]:
         print("overlay    : " + "  ".join(metrics["overlay_paths"][:5]))
@@ -314,29 +301,28 @@ def _print_summary(metrics: dict) -> None:
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="分析 dump 帧 perception 复现度与丢线率。")
-    parser.add_argument("frames", type=Path, help="frame_<t>_left/right.png 所在目录")
-    parser.add_argument("--control-log", type=Path, required=True, help="同一次 run 的 control JSONL")
+    parser = argparse.ArgumentParser(description="Replay saved frames and measure perception loss.")
+    parser.add_argument("frames", type=Path, help="Directory containing frame_<t>_left/right.png")
+    parser.add_argument("--control-log", type=Path, required=True, help="Control JSONL from the same run")
     parser.add_argument("--mode", choices=("no_other_cars", "with_other_cars"), default="no_other_cars",
-                        help="按哪个控制 profile 重算 perception；默认 no_other_cars")
-    parser.add_argument("--out", type=Path, default=None, help="输出指标 JSON")
-    parser.add_argument("--baseline", type=Path, default=None, help="before 指标 JSON，用于中心漂移对比")
-    parser.add_argument("--overlay-dir", type=Path, default=None, help="保存 overlay 的目录")
+                        help="Controller profile used for replay")
+    parser.add_argument("--out", type=Path, default=None, help="Output metrics JSON")
+    parser.add_argument("--baseline", type=Path, default=None, help="Baseline metrics JSON for drift comparison")
+    parser.add_argument("--overlay-dir", type=Path, default=None, help="Directory for overlay images")
     parser.add_argument("--overlay-limit", type=int, default=12,
-                        help="默认模式下最多自动出多少张丢线帧 overlay")
+                        help="Maximum automatically selected loss overlays")
     parser.add_argument("--at", type=str, default=None,
-                        help="逗号分隔的时间戳，如 145.7,177.4：只为这些时刻最近的帧出 overlay "
-                             "（不论是否丢线），用于挑报告里要讲的关键画面")
+                        help="Comma-separated timestamps for selected overlays, e.g. 145.7,177.4")
     return parser.parse_args()
 
 
 def main() -> int:
     args = parse_args()
     if not args.frames.is_dir():
-        print(f"[error] 找不到帧目录: {args.frames}")
+        print(f"[error] frame directory not found: {args.frames}")
         return 1
     if not args.control_log.is_file():
-        print(f"[error] 找不到控制日志: {args.control_log}")
+        print(f"[error] control log not found: {args.control_log}")
         return 1
     overlay_at = None
     if args.at:

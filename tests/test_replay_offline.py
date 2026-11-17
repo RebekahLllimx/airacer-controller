@@ -100,4 +100,4 @@ def test_replay_main_rejects_missing_frame_dir(tmp_path, monkeypatch, capsys):
     ])
 
     assert replay_offline.main() == 1
-    assert "找不到帧目录" in capsys.readouterr().out
+    assert "frame directory not found" in capsys.readouterr().out
