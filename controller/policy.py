@@ -1,132 +1,92 @@
-"""控制策略模块。
-
-功能概述：根据赛道状态统一规划转向和速度。
-输入输出：输入 `TrackState`、时间戳和策略 profile 名称，输出 `ControlCmd`。
-处理流程：计算风险分量，选择驾驶状态，生成目标转向和速度，再做平滑与变化率限制。
-"""
+"""Stateful steering, speed planning, and recovery policy."""
 
 import math
+from dataclasses import dataclass
 
 from controller.common import ControlCmd, TrackState, clamp
 from controller.params import LINE_FOLLOW_PROFILE, get_profile
 
-_LAST_STEERING = 0.0
-_LAST_SPEED = 0.0
-_LAST_TIMESTAMP = None
-_LOST_FRAMES = 0
-_RECOVERY_FRAMES = 0
-_LAST_GOOD_BIAS = 0.0
-_LAST_MODE = "start"
-_STALL_FRAMES = 0
-_ESCAPE_FRAMES = 0
-_ESCAPE_STEERING_SIGN = 1.0
-_ESCAPE_STEERING_MAGNITUDE = 0.0
-_ESCAPE_SPEED = 0.0
-# 倒车脱困：脱困触发时的总帧数与其中"先倒车"的领头帧数。倒车阶段输出负速度
-# 拉开与卡点（栏杆/对手）的距离，随后切回前冲。仅卡死类脱困（pinned/low_speed/
-# boundary）启用倒车；正常巡弯漂移类（turn/large_offset）reverse_frames=0。
-_ESCAPE_TOTAL_FRAMES = 0
-_ESCAPE_REVERSE_FRAMES = 0
-_LAST_TRACK_SIGNATURE = None
-_STRAIGHT_MEMORY_FRAMES = 0
-_HARD_TURN_CANDIDATE_FRAMES = 0
-_RECOVERY_CANDIDATE_FRAMES = 0
-_LAST_MODE_REASON = "start"
-_LAST_TARGET_STEERING = 0.0
-_LAST_TARGET_SPEED = 0.0
-_LAST_SIGNALS = {}
-_LAST_STRAIGHT_MEMORY_ACTIVE = False
-_LINE_STREAK = 0
-_LINE_LAST_OFFSET = 0.0
-_LINE_CORRECTION = 0.0
-_LINE_HOLD_FRAMES = 0
-_CORNER_RELIEF = 0.0
-_TURN_IN_LATCH = 0.0
-# 丢线驱动的强制脱困安全网（多车/复杂场景兜底）：丢线过久即朝路面方向硬舵+低速前进
-_LOST_STREAK = 0
-_NOT_STUCK_FRAMES = 0
-_FORCE_ESCAPE_ACTIVE = False
-_FORCE_ESCAPE_FRAMES = 0
-_FORCE_ESCAPE_SPEED = 0.0
-_FORCE_ESCAPE_STEERING = 0.0
-_FORCE_ESCAPE_SIGN = 1.0
-# force_escape 倒车相位：总帧数 + 领头倒车帧数（先倒车拉开距离再前冲脱困）
-_FORCE_ESCAPE_TOTAL_FRAMES = 0
-_FORCE_ESCAPE_REVERSE_FRAMES = 0
-# 指令速度接近零计数器：物理卡死检测（速度被平台压到≈0 即物理卡死，不依赖丢线判断）
-_ZERO_SPEED_STREAK = 0
-# 光流卡死计数器：命令在前进但画面几乎不动（被顶住空转），control() 拿不到真实速度，
-# 只能靠帧间图像变化识别。撞栏顶住时控制器常以为自己在巡航，这是唯一能察觉的信号。
-_MOTION_STALL_STREAK = 0
+
+@dataclass
+class PolicyState:
+    """All cross-frame policy memory owned by one controller session."""
+
+    last_steering: float = 0.0
+    last_speed: float = 0.0
+    last_timestamp: float | None = None
+    lost_frames: int = 0
+    recovery_frames: int = 0
+    last_good_bias: float = 0.0
+    last_mode: str = "start"
+    stall_frames: int = 0
+    escape_frames: int = 0
+    escape_steering_sign: float = 1.0
+    escape_steering_magnitude: float = 0.0
+    escape_speed: float = 0.0
+    escape_total_frames: int = 0
+    escape_reverse_frames: int = 0
+    last_track_signature: tuple[float, ...] | None = None
+    straight_memory_frames: int = 0
+    hard_turn_candidate_frames: int = 0
+    recovery_candidate_frames: int = 0
+    last_mode_reason: str = "start"
+    last_target_steering: float = 0.0
+    last_target_speed: float = 0.0
+    last_signals: dict | None = None
+    last_straight_memory_active: bool = False
+    line_streak: int = 0
+    line_last_offset: float = 0.0
+    line_correction: float = 0.0
+    line_hold_frames: int = 0
+    corner_relief: float = 0.0
+    turn_in_latch: float = 0.0
+    lost_streak: int = 0
+    not_stuck_frames: int = 0
+    force_escape_active: bool = False
+    force_escape_frames: int = 0
+    force_escape_speed: float = 0.0
+    force_escape_steering: float = 0.0
+    force_escape_sign: float = 1.0
+    force_escape_total_frames: int = 0
+    force_escape_reverse_frames: int = 0
+    zero_speed_streak: int = 0
+    motion_stall_streak: int = 0
+
+    def __post_init__(self) -> None:
+        if self.last_signals is None:
+            self.last_signals = {}
+
+
+_STATE = PolicyState()
 
 
 def reset_policy_state() -> None:
-    """重置策略跨帧状态。
+    """Replace the session state with a clean instance."""
 
-    功能：清空上一帧转向、速度、时间戳和恢复计数。
-    参数：无。
-    返回：无。
-    逻辑：测试或新仿真开始前调用，避免继承旧平滑状态。
-    """
+    global _STATE
+    _STATE = PolicyState()
 
-    global _LAST_STEERING, _LAST_SPEED, _LAST_TIMESTAMP
-    global _LOST_FRAMES, _RECOVERY_FRAMES, _LAST_GOOD_BIAS, _LAST_MODE
-    global _STALL_FRAMES, _ESCAPE_FRAMES, _ESCAPE_STEERING_SIGN, _ESCAPE_STEERING_MAGNITUDE, _ESCAPE_SPEED
-    global _ESCAPE_TOTAL_FRAMES, _ESCAPE_REVERSE_FRAMES
-    global _FORCE_ESCAPE_TOTAL_FRAMES, _FORCE_ESCAPE_REVERSE_FRAMES
-    global _LAST_TRACK_SIGNATURE, _STRAIGHT_MEMORY_FRAMES
-    global _HARD_TURN_CANDIDATE_FRAMES, _RECOVERY_CANDIDATE_FRAMES
-    global _LAST_MODE_REASON, _LAST_TARGET_STEERING, _LAST_TARGET_SPEED, _LAST_SIGNALS, _LAST_STRAIGHT_MEMORY_ACTIVE
-    global _LINE_STREAK, _LINE_LAST_OFFSET, _LINE_CORRECTION, _LINE_HOLD_FRAMES, _CORNER_RELIEF, _TURN_IN_LATCH
-    global _LOST_STREAK, _NOT_STUCK_FRAMES, _FORCE_ESCAPE_ACTIVE, _FORCE_ESCAPE_FRAMES, _FORCE_ESCAPE_SPEED, _FORCE_ESCAPE_STEERING, _FORCE_ESCAPE_SIGN, _ZERO_SPEED_STREAK, _MOTION_STALL_STREAK
-    _LINE_STREAK = 0
-    _LINE_LAST_OFFSET = 0.0
-    _LINE_CORRECTION = 0.0
-    _LINE_HOLD_FRAMES = 0
-    _CORNER_RELIEF = 0.0
-    _TURN_IN_LATCH = 0.0
-    _LOST_STREAK = 0
-    _NOT_STUCK_FRAMES = 0
-    _FORCE_ESCAPE_ACTIVE = False
-    _FORCE_ESCAPE_FRAMES = 0
-    _FORCE_ESCAPE_SPEED = 0.0
-    _FORCE_ESCAPE_STEERING = 0.0
-    _FORCE_ESCAPE_SIGN = 1.0
-    _FORCE_ESCAPE_TOTAL_FRAMES = 0
-    _FORCE_ESCAPE_REVERSE_FRAMES = 0
-    _ESCAPE_TOTAL_FRAMES = 0
-    _ESCAPE_REVERSE_FRAMES = 0
-    _ZERO_SPEED_STREAK = 0
-    _MOTION_STALL_STREAK = 0
-    _LAST_STEERING = 0.0
-    _LAST_SPEED = 0.0
-    _LAST_TIMESTAMP = None
-    _LOST_FRAMES = 0
-    _RECOVERY_FRAMES = 0
-    _LAST_GOOD_BIAS = 0.0
-    _LAST_MODE = "start"
-    _STALL_FRAMES = 0
-    _ESCAPE_FRAMES = 0
-    _ESCAPE_STEERING_SIGN = 1.0
-    _ESCAPE_STEERING_MAGNITUDE = 0.0
-    _ESCAPE_SPEED = 0.0
-    _LAST_TRACK_SIGNATURE = None
-    _STRAIGHT_MEMORY_FRAMES = 0
-    _HARD_TURN_CANDIDATE_FRAMES = 0
-    _RECOVERY_CANDIDATE_FRAMES = 0
-    _LAST_MODE_REASON = "start"
-    _LAST_TARGET_STEERING = 0.0
-    _LAST_TARGET_SPEED = 0.0
-    _LAST_SIGNALS = {}
-    _LAST_STRAIGHT_MEMORY_ACTIVE = False
+
+def get_policy_diagnostics() -> dict:
+    """Return a read-only snapshot for tests, telemetry, and debugging."""
+
+    return {
+        "mode": _STATE.last_mode,
+        "mode_reason": _STATE.last_mode_reason,
+        "line_correction": _STATE.line_correction,
+        "target_steering": _STATE.last_target_steering,
+        "target_speed": _STATE.last_target_speed,
+        "signals": dict(_STATE.last_signals or {}),
+        "force_escape_active": _STATE.force_escape_active,
+    }
 
 
 def _maybe_reset_policy_by_timestamp(timestamp: float, profile: dict) -> None:
     """根据时间戳判断是否重置策略状态。"""
 
-    if _LAST_TIMESTAMP is None:
+    if _STATE.last_timestamp is None:
         return
-    elapsed = float(timestamp) - float(_LAST_TIMESTAMP)
+    elapsed = float(timestamp) - float(_STATE.last_timestamp)
     if elapsed < 0.0 or elapsed > profile["timestamp_reset_gap"]:
         reset_policy_state()
 
@@ -134,9 +94,9 @@ def _maybe_reset_policy_by_timestamp(timestamp: float, profile: dict) -> None:
 def _dt(timestamp: float, profile: dict) -> float:
     """计算本帧控制间隔，首帧使用 nominal_dt。"""
 
-    if _LAST_TIMESTAMP is None:
+    if _STATE.last_timestamp is None:
         return profile["nominal_dt"]
-    return max(float(timestamp) - float(_LAST_TIMESTAMP), profile["nominal_dt"])
+    return max(float(timestamp) - float(_STATE.last_timestamp), profile["nominal_dt"])
 
 
 def _signed_power(value: float, power: float) -> float:
@@ -156,9 +116,9 @@ def _road_direction_sign(track: TrackState) -> float:
 
     reference = track.lateral_error
     if abs(reference) <= 0.05:
-        reference = _LAST_GOOD_BIAS
+        reference = _STATE.last_good_bias
     if abs(reference) <= 1e-3:
-        reference = -_LAST_STEERING
+        reference = -_STATE.last_steering
     if abs(reference) <= 1e-6:
         return 1.0
     return math.copysign(1.0, reference)
@@ -206,12 +166,24 @@ def _control_signals(track: TrackState, profile: dict) -> dict:
     逻辑：速度和模式选择共享这些风险，避免重复估算。
     """
 
-    curve_risk = clamp(max(abs(track.curvature), abs(track.heading_error), abs(track.lookahead_error)), 0.0, 1.0)
+    curve_risk = clamp(
+        max(abs(track.curvature), abs(track.heading_error), abs(track.lookahead_error)),
+        0.0,
+        1.0,
+    )
     offset_risk = clamp(abs(track.lateral_error), 0.0, 1.0)
     confidence_risk = clamp(1.0 - track.confidence, 0.0, 1.0)
     lost_risk = 1.0 if track.lost else 0.0
-    min_margin = min(clamp(track.left_margin_near, 0.0, 1.0), clamp(track.right_margin_near, 0.0, 1.0))
-    margin_risk = clamp((profile["inside_margin_warning"] - min_margin) / profile["inside_margin_warning"], 0.0, 1.0)
+    min_margin = min(
+        clamp(track.left_margin_near, 0.0, 1.0),
+        clamp(track.right_margin_near, 0.0, 1.0),
+    )
+    margin_risk = clamp(
+        (profile["inside_margin_warning"] - min_margin)
+        / profile["inside_margin_warning"],
+        0.0,
+        1.0,
+    )
     turn_demand = clamp(curve_risk * 0.55 + offset_risk * 0.45, 0.0, 1.0)
     risk = clamp(
         curve_risk * profile["risk_curve_weight"]
@@ -243,13 +215,18 @@ def _is_straight_candidate(track: TrackState, signals: dict, profile: dict) -> b
 
     if track.lost or track.confidence < profile["lost_confidence"]:
         return False
-    stable_curve = max(abs(track.curvature), abs(track.lookahead_error)) <= profile["straight_curve_max"]
+    stable_curve = (
+        max(abs(track.curvature), abs(track.lookahead_error))
+        <= profile["straight_curve_max"]
+    )
     centered = signals["offset_risk"] <= profile["straight_offset_max"]
     heading_ok = abs(track.heading_error) <= profile["straight_heading_max"]
     return stable_curve and centered and heading_ok
 
 
-def _is_lost_straight_coast_candidate(track: TrackState, signals: dict, profile: dict) -> bool:
+def _is_lost_straight_coast_candidate(
+    track: TrackState, signals: dict, profile: dict
+) -> bool:
     """判断丢线帧是否仍可按直道惯性滑行。
 
     功能：处理蓝门/天空造成的无观测帧，避免直道速度掉回 0.24。
@@ -260,14 +237,19 @@ def _is_lost_straight_coast_candidate(track: TrackState, signals: dict, profile:
 
     if not track.lost:
         return False
-    stable_curve = max(abs(track.curvature), abs(track.lookahead_error)) <= profile["straight_curve_max"]
+    stable_curve = (
+        max(abs(track.curvature), abs(track.lookahead_error))
+        <= profile["straight_curve_max"]
+    )
     centered = signals["offset_risk"] <= profile["straight_offset_max"]
     heading_ok = abs(track.heading_error) <= profile["straight_heading_max"]
-    steering_ok = abs(_LAST_STEERING) <= profile["straight_lost_steering_max"]
+    steering_ok = abs(_STATE.last_steering) <= profile["straight_lost_steering_max"]
     return stable_curve and centered and heading_ok and steering_ok
 
 
-def _update_straight_memory(track: TrackState, signals: dict, mode: str, profile: dict) -> bool:
+def _update_straight_memory(
+    track: TrackState, signals: dict, mode: str, profile: dict
+) -> bool:
     """更新直道记忆并返回本帧是否允许直道滑行。
 
     功能：让蓝门/天空造成的短暂 lost 不再立刻砸到 `lost_speed`。
@@ -276,21 +258,21 @@ def _update_straight_memory(track: TrackState, signals: dict, mode: str, profile
     逻辑：非 lost 直道帧刷新记忆；lost 帧可消耗记忆，或在几何和上一帧舵角都很直时直接滑行。
     """
 
-    global _STRAIGHT_MEMORY_FRAMES
-
     if _is_straight_candidate(track, signals, profile):
-        _STRAIGHT_MEMORY_FRAMES = int(profile["straight_memory_frames"])
+        _STATE.straight_memory_frames = int(profile["straight_memory_frames"])
         return True
-    if _STRAIGHT_MEMORY_FRAMES > 0 and mode == "lost":
-        _STRAIGHT_MEMORY_FRAMES -= 1
+    if _STATE.straight_memory_frames > 0 and mode == "lost":
+        _STATE.straight_memory_frames -= 1
         return True
     if _is_lost_straight_coast_candidate(track, signals, profile):
         return True
-    _STRAIGHT_MEMORY_FRAMES = 0
+    _STATE.straight_memory_frames = 0
     return False
 
 
-def _select_mode(track: TrackState, signals: dict, timestamp: float, profile: dict) -> str:
+def _select_mode(
+    track: TrackState, signals: dict, timestamp: float, profile: dict
+) -> str:
     """选择内部驾驶状态。
 
     功能：在 lost、recovering、hard_turn、correcting、cruise 之间切换。
@@ -299,42 +281,44 @@ def _select_mode(track: TrackState, signals: dict, timestamp: float, profile: di
     逻辑：丢线优先，其次恢复缓冲、急弯、回中和巡航。
     """
 
-    global _HARD_TURN_CANDIDATE_FRAMES, _RECOVERY_CANDIDATE_FRAMES, _LAST_MODE_REASON
-
     del timestamp
     if track.lost or track.confidence < profile["lost_confidence"]:
-        _HARD_TURN_CANDIDATE_FRAMES = 0
-        _RECOVERY_CANDIDATE_FRAMES = 0
-        _LAST_MODE_REASON = "lost_or_low_confidence"
+        _STATE.hard_turn_candidate_frames = 0
+        _STATE.recovery_candidate_frames = 0
+        _STATE.last_mode_reason = "lost_or_low_confidence"
         return "lost"
-    if _RECOVERY_FRAMES > 0 or track.confidence < profile["recovery_confidence"]:
-        _RECOVERY_CANDIDATE_FRAMES += 1
-        _HARD_TURN_CANDIDATE_FRAMES = 0
-        if _RECOVERY_FRAMES > 0 or _RECOVERY_CANDIDATE_FRAMES >= int(profile["recovery_enter_frames"]):
-            _LAST_MODE_REASON = "recovery_buffer_or_confidence"
+    if _STATE.recovery_frames > 0 or track.confidence < profile["recovery_confidence"]:
+        _STATE.recovery_candidate_frames += 1
+        _STATE.hard_turn_candidate_frames = 0
+        if _STATE.recovery_frames > 0 or _STATE.recovery_candidate_frames >= int(
+            profile["recovery_enter_frames"]
+        ):
+            _STATE.last_mode_reason = "recovery_buffer_or_confidence"
             return "recovering"
     else:
-        _RECOVERY_CANDIDATE_FRAMES = 0
+        _STATE.recovery_candidate_frames = 0
 
     hard_turn_candidate = (
         signals["curve_risk"] > profile["hard_turn_threshold"]
         or signals["turn_demand"] > profile["hard_turn_threshold"]
     )
-    hard_turn_hold = _LAST_MODE == "hard_turn" and (
+    hard_turn_hold = _STATE.last_mode == "hard_turn" and (
         signals["curve_risk"] > profile["hard_turn_exit_threshold"]
         or signals["turn_demand"] > profile["hard_turn_exit_threshold"]
     )
     if hard_turn_candidate or hard_turn_hold:
-        _HARD_TURN_CANDIDATE_FRAMES += 1
+        _STATE.hard_turn_candidate_frames += 1
     else:
-        _HARD_TURN_CANDIDATE_FRAMES = 0
-    if hard_turn_hold or _HARD_TURN_CANDIDATE_FRAMES >= int(profile["hard_turn_enter_frames"]):
-        _LAST_MODE_REASON = "curve_or_turn_demand"
+        _STATE.hard_turn_candidate_frames = 0
+    if hard_turn_hold or _STATE.hard_turn_candidate_frames >= int(
+        profile["hard_turn_enter_frames"]
+    ):
+        _STATE.last_mode_reason = "curve_or_turn_demand"
         return "hard_turn"
     if abs(track.lateral_error) > profile["correction_error"]:
-        _LAST_MODE_REASON = "lateral_error"
+        _STATE.last_mode_reason = "lateral_error"
         return "correcting"
-    _LAST_MODE_REASON = "nominal"
+    _STATE.last_mode_reason = "nominal"
     return "cruise"
 
 
@@ -363,7 +347,9 @@ def _apply_inside_margin_guard(raw: float, track: TrackState, profile: dict) -> 
     return raw
 
 
-def _target_steering(track: TrackState, signals: dict, mode: str, profile: dict) -> float:
+def _target_steering(
+    track: TrackState, signals: dict, mode: str, profile: dict
+) -> float:
     """计算目标转向。
 
     功能：把回中项和前瞻项分开组合，并按状态修正。
@@ -394,9 +380,10 @@ def _target_steering(track: TrackState, signals: dict, mode: str, profile: dict)
     # R047 速度耦合：过弯越快、半径越大——高速进弯时车在"门还没开"的入口段就冲出很远（实测
     # line_offset 入口冲到 −0.59）。把入弯参考随速度收小（faster → ref 小 → arrival 早开 → 早转），
     # 让"入弯提前量"随速度成比例，弥补高速多走的距离。speed_norm=0 时退化为纯 lateral 门控。
-    speed_norm = clamp(_LAST_SPEED / max(profile["max_speed"], 1e-6), 0.0, 1.0)
+    speed_norm = clamp(_STATE.last_speed / max(profile["max_speed"], 1e-6), 0.0, 1.0)
     arrival_ref = max(
-        profile["turn_in_lateral_ref"] * (1.0 - profile["turn_in_speed_comp"] * speed_norm),
+        profile["turn_in_lateral_ref"]
+        * (1.0 - profile["turn_in_speed_comp"] * speed_norm),
         1e-3,
     )
     instant_arrival = clamp(abs(track.lateral_error) / arrival_ref, 0.0, 1.0)
@@ -405,16 +392,17 @@ def _target_steering(track: TrackState, signals: dict, mode: str, profile: dict)
     # 转不到位、半径变大、还得事后找回中线（费速度）；出弯时远处看到直路、门控也跟着提前收。
     # 用 latch 保持最近的 arrival 峰值并按 hold_decay 缓慢衰减：弯中 lateral 短暂回落不收门（持续转），
     # 出弯远处项自然回落时再迟滞收轮（用户要的"出弯 lag"）。直道上远处项≈0，latch 高也不会乱打。
-    global _TURN_IN_LATCH
     if mode == "hard_turn":
         # 已进入弯（committed）：把门 ratchet 到最近峰值并保持，不让它在弯中随 lateral 回落而泄掉
         # （否则长 hairpin 里门一直≈0.15、车整段欠转、半径大）。入弯延迟仍在——hard_turn 早段 lateral
         # 还没长起来时 instant_arrival 小，latch 从小值起步、随 lateral 长大才 ratchet 上去。
-        _TURN_IN_LATCH = max(instant_arrival, _TURN_IN_LATCH)
+        _STATE.turn_in_latch = max(instant_arrival, _STATE.turn_in_latch)
     else:
         # 出弯/直道：按 hold_decay 迟滞收门（出弯 lag），同时仍跟随 instant（正常入弯延迟）。
-        _TURN_IN_LATCH = max(instant_arrival, _TURN_IN_LATCH * profile["turn_in_hold_decay"])
-    corner_arrival = _TURN_IN_LATCH
+        _STATE.turn_in_latch = max(
+            instant_arrival, _STATE.turn_in_latch * profile["turn_in_hold_decay"]
+        )
+    corner_arrival = _STATE.turn_in_latch
     lookahead_term *= corner_arrival
     # R040（2026-06-12，接触日志直接定位 t≈228.6 撞内栏）：弯中最大的舵角来自远处 road-mask
     # 预瞄项（lookahead+heading 可达 -0.99），它把车拉到接近满左锁；可信白线却显示车已切到
@@ -422,7 +410,6 @@ def _target_steering(track: TrackState, signals: dict, mode: str, profile: dict)
     # 来回甩的极限环，最终过冲撞内栏。这里直接在源头按"白线证明车已多内侧 × 置信度"成比例
     # 削弱远处项——既放大半径又消除那个来回甩。只缩远处转向项，不碰 risk/mode/速度/入弯门控，
     # 保持 R013/R014 的"白线不污染主链路风险与速度"边界。**走线改动，需人上车终判。**
-    global _CORNER_RELIEF
     instant_relief = 0.0
     if (
         profile.get("corner_relief_enable")
@@ -433,22 +420,37 @@ def _target_steering(track: TrackState, signals: dict, mode: str, profile: dict)
         and track.line_offset * lookahead_term < 0.0
     ):
         instant_relief = clamp(
-            (abs(track.line_offset) - profile["corner_relief_offset_min"]) * profile["corner_relief_gain"],
+            (abs(track.line_offset) - profile["corner_relief_offset_min"])
+            * profile["corner_relief_gain"],
             0.0,
             profile["corner_relief_max"],
         ) * clamp(track.line_confidence, 0.0, 1.0)
     # R041 保持/迟滞：relief 瞬时触发后按 hold_decay 衰减保持，使 line_offset 在弯中来回穿 0 时
     # 远处项仍被压住，不再被 road-mask 猛拉回 -0.76 → 打破撞内栏的极限环。离开 hard_turn 即清零。
-    if profile.get("corner_relief_enable") and track.red_environment and mode == "hard_turn":
-        _CORNER_RELIEF = max(instant_relief, _CORNER_RELIEF * profile["corner_relief_hold_decay"])
+    if (
+        profile.get("corner_relief_enable")
+        and track.red_environment
+        and mode == "hard_turn"
+    ):
+        _STATE.corner_relief = max(
+            instant_relief, _STATE.corner_relief * profile["corner_relief_hold_decay"]
+        )
     else:
-        _CORNER_RELIEF = 0.0
-    if _CORNER_RELIEF > 0.0:
-        lookahead_term *= 1.0 - _CORNER_RELIEF
-    near_weight = profile["near_weight_base"] + signals["offset_risk"] * profile["near_weight_offset_boost"]
-    far_weight = profile["far_weight_base"] + signals["curve_risk"] * profile["far_weight_curve_boost"]
+        _STATE.corner_relief = 0.0
+    if _STATE.corner_relief > 0.0:
+        lookahead_term *= 1.0 - _STATE.corner_relief
+    near_weight = (
+        profile["near_weight_base"]
+        + signals["offset_risk"] * profile["near_weight_offset_boost"]
+    )
+    far_weight = (
+        profile["far_weight_base"]
+        + signals["curve_risk"] * profile["far_weight_curve_boost"]
+    )
     if center_term * lookahead_term < 0.0:
-        conflict_offset = max(0.0, signals["offset_risk"] - profile["far_conflict_offset_start"])
+        conflict_offset = max(
+            0.0, signals["offset_risk"] - profile["far_conflict_offset_start"]
+        )
         far_weight *= max(
             profile["far_conflict_min_scale"],
             1.0 - conflict_offset * profile["far_conflict_offset_scale"],
@@ -461,7 +463,7 @@ def _target_steering(track: TrackState, signals: dict, mode: str, profile: dict)
     if mode == "lost":
         # 不再死保上一帧舵角（贴墙时那正是把车怼进墙的舵），向最近可信道路方向
         # 偏置靠拢并整体衰减，让车松开栏杆等感知恢复，真正的反向由脱困状态机负责。
-        raw = 0.50 * _LAST_STEERING + 0.20 * _LAST_GOOD_BIAS
+        raw = 0.50 * _STATE.last_steering + 0.20 * _STATE.last_good_bias
     elif mode == "recovering":
         raw *= 0.70
     elif mode == "correcting":
@@ -471,8 +473,7 @@ def _target_steering(track: TrackState, signals: dict, mode: str, profile: dict)
 
     if (
         track.red_environment
-        and
-        track.lateral_error > profile["inside_left_lateral_min"]
+        and track.lateral_error > profile["inside_left_lateral_min"]
         and track.heading_error < profile["inside_left_heading_max"]
         and track.curvature < profile["inside_left_curvature_max"]
     ):
@@ -498,7 +499,9 @@ def _steering_smoothing_for_mode(mode: str, profile: dict) -> float:
     return profile["steering_smoothing_recovery"]
 
 
-def _smooth_steering(target: float, mode: str, timestamp: float, profile: dict) -> float:
+def _smooth_steering(
+    target: float, mode: str, timestamp: float, profile: dict
+) -> float:
     """平滑转向并限制变化率。
 
     功能：按驾驶状态和速度限制方向盘跳变。
@@ -508,15 +511,17 @@ def _smooth_steering(target: float, mode: str, timestamp: float, profile: dict) 
     """
 
     alpha = _steering_smoothing_for_mode(mode, profile)
-    smoothed = _LAST_STEERING * alpha + target * (1.0 - alpha)
+    smoothed = _STATE.last_steering * alpha + target * (1.0 - alpha)
     dt_factor = max(1.0, _dt(timestamp, profile) / profile["nominal_dt"])
-    speed_norm = clamp(_LAST_SPEED / max(profile["max_speed"], 1e-6), 0.0, 1.0)
+    speed_norm = clamp(_STATE.last_speed / max(profile["max_speed"], 1e-6), 0.0, 1.0)
     speed_factor = 1.0 - 0.35 * speed_norm
     max_delta = profile["max_steering_delta"] * dt_factor * speed_factor
-    delta = clamp(smoothed - _LAST_STEERING, -max_delta, max_delta)
+    delta = clamp(smoothed - _STATE.last_steering, -max_delta, max_delta)
     # 速度相关的转向幅值上限：高速时收舵，避免同样舵角在高速下半径过小切内线。
-    max_abs = profile["max_abs_steering"] * (1.0 - profile["steering_speed_cap_scale"] * speed_norm)
-    return clamp(_LAST_STEERING + delta, -max_abs, max_abs)
+    max_abs = profile["max_abs_steering"] * (
+        1.0 - profile["steering_speed_cap_scale"] * speed_norm
+    )
+    return clamp(_STATE.last_steering + delta, -max_abs, max_abs)
 
 
 def _target_speed(
@@ -542,12 +547,28 @@ def _target_speed(
             return profile["straight_lost_speed"]
         return profile["lost_speed"]
 
-    curve_factor = 1.0 - profile["curve_slowdown"] * (signals["curve_risk"] ** profile["curve_power"])
-    offset_factor = 1.0 - profile["offset_slowdown"] * (signals["offset_risk"] ** profile["offset_power"])
-    confidence_factor = profile["min_confidence_factor"] + (1.0 - profile["min_confidence_factor"]) * track.confidence
-    steering_factor = 1.0 - profile["steering_slowdown"] * (abs(steering) ** profile["steering_power"])
+    curve_factor = 1.0 - profile["curve_slowdown"] * (
+        signals["curve_risk"] ** profile["curve_power"]
+    )
+    offset_factor = 1.0 - profile["offset_slowdown"] * (
+        signals["offset_risk"] ** profile["offset_power"]
+    )
+    confidence_factor = (
+        profile["min_confidence_factor"]
+        + (1.0 - profile["min_confidence_factor"]) * track.confidence
+    )
+    steering_factor = 1.0 - profile["steering_slowdown"] * (
+        abs(steering) ** profile["steering_power"]
+    )
     margin_factor = 1.0 - profile["inside_margin_slowdown"] * signals["margin_risk"]
-    target = profile["base_speed"] * curve_factor * offset_factor * confidence_factor * steering_factor * margin_factor
+    target = (
+        profile["base_speed"]
+        * curve_factor
+        * offset_factor
+        * confidence_factor
+        * steering_factor
+        * margin_factor
+    )
 
     if mode == "recovering":
         target = min(target, profile["recovery_speed"])
@@ -575,7 +596,9 @@ def _target_speed(
         side_factor = float(profile.get("opponent_side_speed_factor", front_factor))
         target *= side_factor + (front_factor - side_factor) * centered
         # 弯道+正前方对手车：更激进减速，防止多车弯道碰撞卡死；偏侧车不叠这么重。
-        if centered >= 0.35 and signals["curve_risk"] >= profile.get("opponent_corner_curve_threshold", 0.25):
+        if centered >= 0.35 and signals["curve_risk"] >= profile.get(
+            "opponent_corner_curve_threshold", 0.25
+        ):
             target *= profile.get("opponent_corner_speed_factor", 0.55)
     return clamp(target, profile["min_speed"], profile["max_speed"])
 
@@ -590,12 +613,16 @@ def _smooth_speed(target: float, timestamp: float, profile: dict) -> float:
     """
 
     dt = _dt(timestamp, profile)
-    delta = target - _LAST_SPEED
+    delta = target - _STATE.last_speed
     if delta >= 0.0:
         delta = min(delta, profile["max_speed_increase_per_sec"] * dt)
     else:
         delta = max(delta, -profile["max_speed_decrease_per_sec"] * dt)
-    return clamp(_LAST_SPEED + delta, min(profile["min_speed"], target), profile["max_speed"])
+    return clamp(
+        _STATE.last_speed + delta,
+        min(profile["min_speed"], target),
+        profile["max_speed"],
+    )
 
 
 def _track_signature(track: TrackState) -> tuple[float, float, float, float, float]:
@@ -629,35 +656,35 @@ def _escape_if_stalled(
         低速贴墙本就是低置信状态，所以低速脱困放宽置信度门槛，basic 也启用。
     """
 
-    global _STALL_FRAMES, _ESCAPE_FRAMES, _ESCAPE_STEERING_SIGN, _ESCAPE_STEERING_MAGNITUDE, _ESCAPE_SPEED
-    global _ESCAPE_TOTAL_FRAMES, _ESCAPE_REVERSE_FRAMES
-    global _LAST_TRACK_SIGNATURE
-
     signature = _track_signature(track)
-    if _LAST_TRACK_SIGNATURE is None:
+    if _STATE.last_track_signature is None:
         signature_delta = 1.0
     else:
-        signature_delta = sum(abs(a - b) for a, b in zip(signature, _LAST_TRACK_SIGNATURE))
-    _LAST_TRACK_SIGNATURE = signature
+        signature_delta = sum(
+            abs(a - b) for a, b in zip(signature, _STATE.last_track_signature)
+        )
+    _STATE.last_track_signature = signature
 
-    if _ESCAPE_FRAMES > 0:
-        _ESCAPE_FRAMES -= 1
+    if _STATE.escape_frames > 0:
+        _STATE.escape_frames -= 1
         # 脱困期间交替打轮（左右摆动），打破物理卡死的静摩擦。
         # 每 10 帧切换一次方向，叠加在已设置的基准舵角上。
-        wiggle = 1.0 if (_ESCAPE_FRAMES // 10) % 2 == 0 else -1.0
+        wiggle = 1.0 if (_STATE.escape_frames // 10) % 2 == 0 else -1.0
         wiggle_amplitude = float(profile.get("escape_wiggle_amplitude", 0.20))
         max_abs = profile["max_abs_steering"]
         # 倒车相位：脱困的领头若干帧先后退（负速度）拉开与卡点的距离。仅卡死类脱困
         # 设了 reverse_frames>0。三点掉头式：自行车模型 dθ/dt=(v/L)tanδ，倒车 v<0 时
         # 要让车头转向开阔侧，方向盘需反向打（与前冲相位相反），否则车头会越倒越扎进夹角。
-        elapsed = _ESCAPE_TOTAL_FRAMES - _ESCAPE_FRAMES
-        if elapsed <= _ESCAPE_REVERSE_FRAMES:
-            phase_sign = -_ESCAPE_STEERING_SIGN
+        elapsed = _STATE.escape_total_frames - _STATE.escape_frames
+        if elapsed <= _STATE.escape_reverse_frames:
+            phase_sign = -_STATE.escape_steering_sign
             speed_out = -float(profile.get("escape_reverse_speed", 0.40))
         else:
-            phase_sign = _ESCAPE_STEERING_SIGN
-            speed_out = max(speed, _ESCAPE_SPEED)
-        escape_steering = phase_sign * (_ESCAPE_STEERING_MAGNITUDE + wiggle * wiggle_amplitude)
+            phase_sign = _STATE.escape_steering_sign
+            speed_out = max(speed, _STATE.escape_speed)
+        escape_steering = phase_sign * (
+            _STATE.escape_steering_magnitude + wiggle * wiggle_amplitude
+        )
         return (
             clamp(escape_steering, -max_abs, max_abs),
             speed_out,
@@ -670,7 +697,8 @@ def _escape_if_stalled(
     )
     aligned_offset = (
         signals["offset_risk"] >= profile["escape_offset_threshold"]
-        and track.lateral_error * track.lookahead_error >= profile["escape_offset_lookahead_alignment"]
+        and track.lateral_error * track.lookahead_error
+        >= profile["escape_offset_lookahead_alignment"]
     )
     large_offset_stall = (
         allow_geometry_escape
@@ -679,7 +707,8 @@ def _escape_if_stalled(
         and speed <= profile["escape_offset_speed_threshold"]
         and abs(track.heading_error) <= profile["escape_offset_heading_abs_max"]
         and abs(track.curvature) <= profile["escape_offset_curve_abs_max"]
-        and track.lateral_error * track.lookahead_error >= profile["escape_offset_lookahead_alignment"]
+        and track.lateral_error * track.lookahead_error
+        >= profile["escape_offset_lookahead_alignment"]
     )
     low_speed_stall = speed <= profile["escape_low_speed_threshold"]
     # 顶住栏杆但速度还没塌到低速阈值（落在 low_speed 覆盖空档）：几何冻结 + 大偏移 + 大反向打轮。
@@ -693,7 +722,8 @@ def _escape_if_stalled(
         and track.near_obstacle
         and mode in {"hard_turn", "correcting"}
         and signals["margin_risk"] >= profile["escape_boundary_margin_risk"]
-        and min(track.left_margin_near, track.right_margin_near) <= profile["escape_boundary_margin_max"]
+        and min(track.left_margin_near, track.right_margin_near)
+        <= profile["escape_boundary_margin_max"]
         and speed <= profile["escape_boundary_speed_max"]
         and not track.lost
         and track.confidence >= profile["escape_boundary_min_confidence"]
@@ -763,19 +793,19 @@ def _escape_if_stalled(
         not track.lost and track.confidence >= profile["escape_min_confidence"]
     )
     if should_count_stall and stable_view and confidence_ok:
-        _STALL_FRAMES += 1
+        _STATE.stall_frames += 1
     else:
-        _STALL_FRAMES = 0
+        _STATE.stall_frames = 0
 
-    if _STALL_FRAMES >= trigger_frames:
-        _STALL_FRAMES = 0
-        _ESCAPE_STEERING_SIGN = escape_sign
-        _ESCAPE_STEERING_MAGNITUDE = escape_steering
-        _ESCAPE_SPEED = escape_speed
-        _ESCAPE_FRAMES = escape_frames
-        _ESCAPE_TOTAL_FRAMES = escape_frames
+    if _STATE.stall_frames >= trigger_frames:
+        _STATE.stall_frames = 0
+        _STATE.escape_steering_sign = escape_sign
+        _STATE.escape_steering_magnitude = escape_steering
+        _STATE.escape_speed = escape_speed
+        _STATE.escape_frames = escape_frames
+        _STATE.escape_total_frames = escape_frames
         # 倒车帧数不超过总帧数的一半，保证后半段一定有前冲把车开出去。
-        _ESCAPE_REVERSE_FRAMES = min(escape_reverse_frames, escape_frames // 2)
+        _STATE.escape_reverse_frames = min(escape_reverse_frames, escape_frames // 2)
 
     return steering, speed, mode
 
@@ -799,8 +829,6 @@ def _lane_line_correction(
     白车/斑马线（near_obstacle）、弯中错误线段（单帧出现、帧间突变、高弯量时直线拟合失真）。
     """
 
-    global _LINE_STREAK, _LINE_LAST_OFFSET, _LINE_CORRECTION, _LINE_HOLD_FRAMES
-
     normal_valid = (
         profile["enable"]
         and track.line_confidence >= profile["min_confidence"]
@@ -813,27 +841,48 @@ def _lane_line_correction(
         and track.red_environment
         and timestamp <= profile["startup_acquire_until"]
         and track.line_confidence >= profile["min_confidence"]
-        and profile["startup_offset_min"] <= track.line_offset <= profile["startup_offset_trust_max"]
-        and profile["startup_heading_min"] <= track.line_heading <= profile["startup_heading_max"]
+        and profile["startup_offset_min"]
+        <= track.line_offset
+        <= profile["startup_offset_trust_max"]
+        and profile["startup_heading_min"]
+        <= track.line_heading
+        <= profile["startup_heading_max"]
         and not track.near_obstacle
         and mode != "escaping"
     )
     valid = normal_valid or startup_valid
-    if valid and _LINE_STREAK > 0 and abs(track.line_offset - _LINE_LAST_OFFSET) > profile["offset_jump_max"]:
+    if (
+        valid
+        and _STATE.line_streak > 0
+        and abs(track.line_offset - _STATE.line_last_offset)
+        > profile["offset_jump_max"]
+    ):
         valid = False
-        _LINE_STREAK = 0
+        _STATE.line_streak = 0
     if valid:
-        _LINE_STREAK += 1
-        _LINE_LAST_OFFSET = track.line_offset
+        _STATE.line_streak += 1
+        _STATE.line_last_offset = track.line_offset
     else:
-        _LINE_STREAK = 0
+        _STATE.line_streak = 0
 
     target = 0.0
-    confirm_frames = int(profile["startup_confirm_frames"] if startup_valid and not normal_valid else profile["confirm_frames"])
-    active = valid and _LINE_STREAK >= confirm_frames
+    confirm_frames = int(
+        profile["startup_confirm_frames"]
+        if startup_valid and not normal_valid
+        else profile["confirm_frames"]
+    )
+    active = valid and _STATE.line_streak >= confirm_frames
     if active:
-        max_correction = profile["startup_max_correction"] if startup_valid and not normal_valid else profile["max_correction"]
-        curve_gate = profile["startup_curve_gate"] if startup_valid and not normal_valid else profile["curve_gate"]
+        max_correction = (
+            profile["startup_max_correction"]
+            if startup_valid and not normal_valid
+            else profile["max_correction"]
+        )
+        curve_gate = (
+            profile["startup_curve_gate"]
+            if startup_valid and not normal_valid
+            else profile["curve_gate"]
+        )
         offset_target = track.line_offset * profile["offset_gain"]
         mixed_target = offset_target + track.line_heading * profile["heading_gain"]
         curve_scale = 1.0 - clamp(signals["curve_risk"] / curve_gate, 0.0, 1.0)
@@ -858,13 +907,17 @@ def _lane_line_correction(
             profile["inside_assist_enable"]
             and track.red_environment
             and mode in {"hard_turn", "correcting"}
-            and _LINE_STREAK >= int(profile["inside_assist_streak_min"])
+            and _STATE.line_streak >= int(profile["inside_assist_streak_min"])
             and abs(track.line_offset) >= profile["inside_assist_offset_min"]
             and track.line_offset * track.line_heading < 0.0
         ):
             excess = abs(track.line_offset) - profile["inside_assist_offset_min"]
             assist = math.copysign(
-                clamp(excess * profile["inside_assist_gain"], 0.0, profile["inside_assist_max"]),
+                clamp(
+                    excess * profile["inside_assist_gain"],
+                    0.0,
+                    profile["inside_assist_max"],
+                ),
                 track.line_offset,
             )
             if assist * target >= 0.0:
@@ -874,29 +927,46 @@ def _lane_line_correction(
     # 弯道预判继续把车往内切。只在 hard_turn/correcting 且上一段可信白线确显示车已偏到内侧时启用。
     turn_mode = mode in {"hard_turn", "correcting"}
     if active:
-        _LINE_HOLD_FRAMES = (
+        _STATE.line_hold_frames = (
             int(profile["hold_frames"])
-            if turn_mode and abs(_LINE_LAST_OFFSET) >= profile["hold_offset_min"]
+            if turn_mode and abs(_STATE.line_last_offset) >= profile["hold_offset_min"]
             else 0
         )
-    elif _LINE_HOLD_FRAMES > 0 and turn_mode:
-        _LINE_HOLD_FRAMES -= 1
-        _LINE_CORRECTION *= profile["hold_decay"]
-        return clamp(_LINE_CORRECTION, -profile["max_correction"], profile["max_correction"])
+    elif _STATE.line_hold_frames > 0 and turn_mode:
+        _STATE.line_hold_frames -= 1
+        _STATE.line_correction *= profile["hold_decay"]
+        return clamp(
+            _STATE.line_correction,
+            -profile["max_correction"],
+            profile["max_correction"],
+        )
     else:
-        _LINE_HOLD_FRAMES = 0
+        _STATE.line_hold_frames = 0
 
     if startup_valid and not normal_valid:
         alpha = profile["startup_smoothing"]
-    elif not valid and timestamp <= profile["startup_acquire_until"] and _LINE_CORRECTION > 0.0:
+    elif (
+        not valid
+        and timestamp <= profile["startup_acquire_until"]
+        and _STATE.line_correction > 0.0
+    ):
         alpha = profile["startup_decay"]
     else:
         alpha = profile["smoothing"]
-    _LINE_CORRECTION = _LINE_CORRECTION * alpha + target * (1.0 - alpha)
-    return clamp(_LINE_CORRECTION, -profile["max_correction"], profile["max_correction"])
+    _STATE.line_correction = _STATE.line_correction * alpha + target * (1.0 - alpha)
+    return clamp(
+        _STATE.line_correction, -profile["max_correction"], profile["max_correction"]
+    )
 
 
-def _update_policy_state(track: TrackState, steering: float, speed: float, mode: str, timestamp: float, profile: dict) -> None:
+def _update_policy_state(
+    track: TrackState,
+    steering: float,
+    speed: float,
+    mode: str,
+    timestamp: float,
+    profile: dict,
+) -> None:
     """写回策略跨帧状态。
 
     功能：维护丢线计数、恢复缓冲、最近可信方向和上一帧控制量。
@@ -905,32 +975,159 @@ def _update_policy_state(track: TrackState, steering: float, speed: float, mode:
     逻辑：刚从丢线恢复时保守若干帧；高置信时更新恢复方向偏置。
     """
 
-    global _LAST_STEERING, _LAST_SPEED, _LAST_TIMESTAMP
-    global _LOST_FRAMES, _RECOVERY_FRAMES, _LAST_GOOD_BIAS, _LAST_MODE
-
     if track.lost:
-        _LOST_FRAMES += 1
+        _STATE.lost_frames += 1
     else:
-        if _LOST_FRAMES > 0:
-            _RECOVERY_FRAMES = int(profile["recovery_frames"])
-        _LOST_FRAMES = 0
-    if _RECOVERY_FRAMES > 0 and not track.lost:
-        _RECOVERY_FRAMES -= 1
+        if _STATE.lost_frames > 0:
+            _STATE.recovery_frames = int(profile["recovery_frames"])
+        _STATE.lost_frames = 0
+    if _STATE.recovery_frames > 0 and not track.lost:
+        _STATE.recovery_frames -= 1
 
     if not track.lost and track.confidence >= profile["recovery_confidence"]:
-        _LAST_GOOD_BIAS = clamp(
-            track.lateral_error * 0.55 + track.lookahead_error * 0.25 + track.curvature * 0.20,
+        _STATE.last_good_bias = clamp(
+            track.lateral_error * 0.55
+            + track.lookahead_error * 0.25
+            + track.curvature * 0.20,
             -1.0,
             1.0,
         )
 
-    _LAST_STEERING = steering
-    _LAST_SPEED = speed
-    _LAST_TIMESTAMP = timestamp
-    _LAST_MODE = mode
+    _STATE.last_steering = steering
+    _STATE.last_speed = speed
+    _STATE.last_timestamp = timestamp
+    _STATE.last_mode = mode
 
 
-def decide_control(track: TrackState, timestamp: float, mode: str = "no_other_cars") -> ControlCmd:
+def _continue_forced_escape(
+    track: TrackState,
+    timestamp: float,
+    profile: dict,
+) -> ControlCmd | None:
+    """Advance an active multi-car recovery sequence, if one exists."""
+
+    if not _STATE.force_escape_active:
+        return None
+    if _STATE.force_escape_frames <= 0:
+        _STATE.force_escape_active = False
+        _STATE.lost_streak = 0
+        return None
+
+    _STATE.force_escape_frames -= 1
+    elapsed = _STATE.force_escape_total_frames - _STATE.force_escape_frames
+    steering = clamp(
+        _STATE.force_escape_sign * _STATE.force_escape_steering,
+        -1.0,
+        1.0,
+    )
+    if elapsed <= _STATE.force_escape_reverse_frames:
+        speed = -float(profile.get("force_reverse_back_speed", 0.42))
+    else:
+        speed = _STATE.force_escape_speed
+    _update_policy_state(track, steering, speed, "escaping", timestamp, profile)
+    return ControlCmd(steering, speed)
+
+
+def _blockage_triggered(
+    track: TrackState,
+    speed: float,
+    drive_mode: str,
+    profile: dict,
+) -> bool:
+    """Update independent blockage counters and report whether one fired."""
+
+    if track.lost:
+        _STATE.lost_streak += 1
+        _STATE.not_stuck_frames = 0
+    else:
+        _STATE.not_stuck_frames += 1
+        if _STATE.not_stuck_frames > 90:
+            _STATE.lost_streak = 0
+            _STATE.not_stuck_frames = 0
+
+    zero_speed_frames = int(profile.get("force_reverse_zero_speed_frames", 120))
+    zero_speed_threshold = float(
+        profile.get("force_reverse_zero_speed_threshold", 0.05)
+    )
+    if speed <= zero_speed_threshold and drive_mode != "escaping":
+        _STATE.zero_speed_streak += 1
+    else:
+        _STATE.zero_speed_streak = 0
+
+    motion_still_threshold = float(profile.get("motion_still_threshold", 2.5))
+    motion_still_frames = int(profile.get("motion_still_frames", 40))
+    motion_min_cmd_speed = float(profile.get("motion_still_min_cmd_speed", 0.35))
+    if (
+        track.frame_motion < motion_still_threshold
+        and speed >= motion_min_cmd_speed
+        and drive_mode != "escaping"
+    ):
+        _STATE.motion_stall_streak += 1
+    else:
+        _STATE.motion_stall_streak = 0
+
+    return (
+        _STATE.lost_streak >= int(profile.get("force_reverse_lost_streak", 45))
+        or _STATE.zero_speed_streak >= zero_speed_frames
+        or _STATE.motion_stall_streak >= motion_still_frames
+    )
+
+
+def _start_forced_escape(track: TrackState, profile: dict) -> None:
+    """Initialize a timed reverse/forward recovery toward the open side."""
+
+    _STATE.force_escape_active = True
+    _STATE.force_escape_frames = int(profile.get("force_reverse_lost_frames", 120))
+    _STATE.force_escape_total_frames = _STATE.force_escape_frames
+    _STATE.force_escape_reverse_frames = min(
+        int(profile.get("force_reverse_back_frames", 65)),
+        int(_STATE.force_escape_frames * 0.6),
+    )
+    _STATE.force_escape_speed = float(profile.get("force_reverse_lost_speed", 0.35))
+    _STATE.force_escape_steering = float(
+        profile.get("force_reverse_lost_steering", 0.88)
+    )
+    _STATE.force_escape_sign = _margin_escape_sign(track, _road_direction_sign(track))
+    _STATE.lost_streak = 0
+    _STATE.not_stuck_frames = 0
+    _STATE.zero_speed_streak = 0
+    _STATE.motion_stall_streak = 0
+
+
+def _apply_opponent_avoidance(
+    steering: float,
+    track: TrackState,
+    profile: dict,
+) -> float:
+    """Bias steering away from a nearby vehicle within available road space."""
+
+    if not (
+        profile.get("enable_opponent", True)
+        and profile.get("opponent_avoid_steering_enable", True)
+        and track.near_obstacle
+        and not track.lost
+        and track.confidence >= 0.30
+    ):
+        return steering
+
+    avoid_gain = float(profile.get("opponent_avoid_steering_gain", 0.40))
+    avoid_max = float(profile.get("opponent_avoid_steering_max", 0.18))
+    margin_diff = track.right_margin_near - track.left_margin_near
+    margin_bias = clamp(margin_diff * avoid_gain, -avoid_max, avoid_max)
+
+    obstacle_x = clamp(float(track.obstacle_x), -1.0, 1.0)
+    direction_bias = 0.0
+    if abs(obstacle_x) > float(profile.get("opponent_direction_deadzone", 0.16)):
+        direction_gain = float(profile.get("opponent_direction_steering_gain", 0.20))
+        direction_bias = clamp(-obstacle_x * direction_gain, -avoid_max, avoid_max)
+
+    avoid_bias = clamp(margin_bias + direction_bias, -avoid_max, avoid_max)
+    return clamp(steering + avoid_bias, -1.0, 1.0)
+
+
+def decide_control(
+    track: TrackState, timestamp: float, mode: str = "no_other_cars"
+) -> ControlCmd:
     """计算最终控制命令。
 
     功能：按唯一策略生成转向和速度。
@@ -939,41 +1136,21 @@ def decide_control(track: TrackState, timestamp: float, mode: str = "no_other_ca
     逻辑：所有 mode 和赛道都使用同一套参数；内部用状态机协同转向、速度和恢复策略。
     """
 
-    global _LAST_TARGET_STEERING, _LAST_TARGET_SPEED, _LAST_SIGNALS, _LAST_STRAIGHT_MEMORY_ACTIVE
-    global _FORCE_ESCAPE_ACTIVE, _FORCE_ESCAPE_FRAMES, _FORCE_ESCAPE_SPEED
-    global _FORCE_ESCAPE_STEERING, _FORCE_ESCAPE_SIGN, _LOST_STREAK, _NOT_STUCK_FRAMES, _ZERO_SPEED_STREAK
-    global _FORCE_ESCAPE_TOTAL_FRAMES, _FORCE_ESCAPE_REVERSE_FRAMES, _MOTION_STALL_STREAK
-
     profile = get_profile(mode)
     timestamp = float(timestamp)
     _maybe_reset_policy_by_timestamp(timestamp, profile)
 
-    # ── 丢线强制脱困安全网：最高优先级 ──
-    if _FORCE_ESCAPE_ACTIVE:
-        if _FORCE_ESCAPE_FRAMES > 0:
-            _FORCE_ESCAPE_FRAMES -= 1
-            # 物理卡死/丢线兜底（多车堆里被另一辆车顶住是典型场景）：倒车相位**与前冲同向**
-            # 朝开阔侧（余量大的一侧）后退，把车从车堆里整体倒进开阔角落，而不是像顶栏 K-turn
-            # 那样反打、把车尾甩向旁边的堵车。倒车相位占比更大（净后退才能脱开堵车）。
-            # 线上 speed 被 clamp 到 0，倒车退化为短暂停顿，前进相位仍朝开阔侧脱困。
-            elapsed = _FORCE_ESCAPE_TOTAL_FRAMES - _FORCE_ESCAPE_FRAMES
-            esc_steering = _FORCE_ESCAPE_SIGN * _FORCE_ESCAPE_STEERING
-            if elapsed <= _FORCE_ESCAPE_REVERSE_FRAMES:
-                speed_out = -float(profile.get("force_reverse_back_speed", 0.42))
-            else:
-                speed_out = _FORCE_ESCAPE_SPEED
-            steering_out = clamp(esc_steering, -1.0, 1.0)
-            _update_policy_state(track, steering_out, speed_out, "escaping", timestamp, profile)
-            return ControlCmd(steering_out, speed_out)
-        else:
-            _FORCE_ESCAPE_ACTIVE = False
-            _LOST_STREAK = 0
+    forced_escape = _continue_forced_escape(track, timestamp, profile)
+    if forced_escape is not None:
+        return forced_escape
 
     signals = _control_signals(track, profile)
     drive_mode = _select_mode(track, signals, timestamp, profile)
-    straight_memory_active = _update_straight_memory(track, signals, drive_mode, profile)
+    straight_memory_active = _update_straight_memory(
+        track, signals, drive_mode, profile
+    )
     target_steering = _target_steering(track, signals, drive_mode, profile)
-    _LAST_TARGET_STEERING = target_steering
+    _STATE.last_target_steering = target_steering
     steering = _smooth_steering(target_steering, drive_mode, timestamp, profile)
     target_speed = _target_speed(
         track,
@@ -984,9 +1161,9 @@ def decide_control(track: TrackState, timestamp: float, mode: str = "no_other_ca
         profile,
         straight_memory_active=straight_memory_active,
     )
-    _LAST_TARGET_SPEED = target_speed
-    _LAST_SIGNALS = dict(signals)
-    _LAST_STRAIGHT_MEMORY_ACTIVE = bool(straight_memory_active)
+    _STATE.last_target_speed = target_speed
+    _STATE.last_signals = dict(signals)
+    _STATE.last_straight_memory_active = bool(straight_memory_active)
     speed = _smooth_speed(target_speed, timestamp, profile)
     # 低速贴墙脱困两条赛道都启用；依赖可靠几何的急弯/大偏移脱困仍只在 complex(red)。
     steering, speed, drive_mode = _escape_if_stalled(
@@ -995,89 +1172,20 @@ def decide_control(track: TrackState, timestamp: float, mode: str = "no_other_ca
     # 跨帧状态记录修正前的舵角：白线修正只作用于最终输出，平滑、限速和脱困
     # 判据都不感知它（与 R011 在入口层后置修正时的动力学一致）。
     _update_policy_state(track, steering, speed, drive_mode, timestamp, profile)
-    line_correction = _lane_line_correction(track, signals, drive_mode, LINE_FOLLOW_PROFILE, timestamp)
+    line_correction = _lane_line_correction(
+        track, signals, drive_mode, LINE_FOLLOW_PROFILE, timestamp
+    )
     final_steering = clamp(steering + line_correction, -1.0, 1.0)
 
-    # ── 卡死检测：丢线累加，持续恢复正常才重置 ──
-    if track.lost:
-        _LOST_STREAK += 1
-        _NOT_STUCK_FRAMES = 0
-    else:
-        _NOT_STUCK_FRAMES += 1
-        if _NOT_STUCK_FRAMES > 90:
-            _LOST_STREAK = 0
-            _NOT_STUCK_FRAMES = 0
-
-    # 触发A：丢线持续过久
-    lost_streak_threshold = int(profile.get("force_reverse_lost_streak", 45))
-    # 触发B：指令速度接近零持续过久（物理卡死，即使不丢线也强制脱困）
-    zero_speed_frames = int(profile.get("force_reverse_zero_speed_frames", 120))
-    zero_speed_threshold = float(profile.get("force_reverse_zero_speed_threshold", 0.05))
-    if speed <= zero_speed_threshold and drive_mode != "escaping":
-        _ZERO_SPEED_STREAK += 1
-    else:
-        _ZERO_SPEED_STREAK = 0
-    _zero_trigger = _ZERO_SPEED_STREAK >= zero_speed_frames
-    # 触发C：光流卡死——命令在前进（speed 够大）但画面几乎不动（被顶住空转）。
-    # 这是控制器唯一能察觉"撞栏顶住但自以为在巡航"的信号（control() 拿不到真实速度）。
-    motion_still_threshold = float(profile.get("motion_still_threshold", 2.5))
-    motion_still_frames = int(profile.get("motion_still_frames", 40))
-    motion_min_cmd_speed = float(profile.get("motion_still_min_cmd_speed", 0.35))
-    if (
-        track.frame_motion < motion_still_threshold
-        and speed >= motion_min_cmd_speed
-        and drive_mode != "escaping"
-    ):
-        _MOTION_STALL_STREAK += 1
-    else:
-        _MOTION_STALL_STREAK = 0
-    _motion_trigger = _MOTION_STALL_STREAK >= motion_still_frames
-
-    # force_escape（含倒车）与 motion-stall 只属于 with_other_cars：no_other_cars 总开关关闭，
-    # 即使参数被误改也不会在单车里触发倒车脱困（参数门控之外的第二道保险）。
+    blockage_triggered = _blockage_triggered(track, speed, drive_mode, profile)
     if (
         profile.get("enable_opponent", True)
-        and (_LOST_STREAK >= lost_streak_threshold or _zero_trigger or _motion_trigger)
-        and not _FORCE_ESCAPE_ACTIVE
+        and blockage_triggered
+        and not _STATE.force_escape_active
         and timestamp > 3.0
     ):
-        _FORCE_ESCAPE_ACTIVE = True
-        _FORCE_ESCAPE_FRAMES = int(profile.get("force_reverse_lost_frames", 120))
-        _FORCE_ESCAPE_TOTAL_FRAMES = _FORCE_ESCAPE_FRAMES
-        # 领头倒车帧：丢线/卡死兜底走净后退（reverse 占主导），上限放到总帧 0.6，
-        # 但仍留 ≥40% 前冲把车开出去。
-        _FORCE_ESCAPE_REVERSE_FRAMES = min(
-            int(profile.get("force_reverse_back_frames", 65)),
-            int(_FORCE_ESCAPE_FRAMES * 0.6),
-        )
-        _FORCE_ESCAPE_SPEED = float(profile.get("force_reverse_lost_speed", 0.35))
-        _FORCE_ESCAPE_STEERING = float(profile.get("force_reverse_lost_steering", 0.88))
-        # 丢线/卡死时几何方向不可靠，优先按左右余量差朝开阔侧脱困（车堆里这是唯一可信信号）。
-        _FORCE_ESCAPE_SIGN = _margin_escape_sign(track, _road_direction_sign(track))
-        _LOST_STREAK = 0
-        _NOT_STUCK_FRAMES = 0
-        _ZERO_SPEED_STREAK = 0
-        _MOTION_STALL_STREAK = 0
+        _start_forced_escape(track, profile)
 
-    # ── 对手车主动避让转向：车身方向决定绕行侧，边界余量限制偏置强度 ──
-    if (
-        profile.get("enable_opponent", True)
-        and profile.get("opponent_avoid_steering_enable", True)
-        and track.near_obstacle
-        and not track.lost
-        and track.confidence >= 0.30
-    ):
-        margin_diff = track.right_margin_near - track.left_margin_near
-        avoid_gain = float(profile.get("opponent_avoid_steering_gain", 0.40))
-        avoid_max = float(profile.get("opponent_avoid_steering_max", 0.18))
-        margin_bias = clamp(margin_diff * avoid_gain, -avoid_max, avoid_max)
-        obstacle_x = clamp(float(track.obstacle_x), -1.0, 1.0)
-        direction_deadzone = float(profile.get("opponent_direction_deadzone", 0.16))
-        direction_bias = 0.0
-        if abs(obstacle_x) > direction_deadzone:
-            direction_gain = float(profile.get("opponent_direction_steering_gain", 0.20))
-            direction_bias = clamp(-obstacle_x * direction_gain, -avoid_max, avoid_max)
-        avoid_bias = clamp(margin_bias + direction_bias, -avoid_max, avoid_max)
-        final_steering = clamp(final_steering + avoid_bias, -1.0, 1.0)
+    final_steering = _apply_opponent_avoidance(final_steering, track, profile)
 
     return ControlCmd(final_steering, speed)

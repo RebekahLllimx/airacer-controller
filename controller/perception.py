@@ -1,9 +1,4 @@
-"""视觉感知模块。
-
-功能概述：从左右摄像头图像中分割道路表面，并沿扫描线跟踪可行驶走廊。
-输入输出：输入 BGR 图像和可选时间戳，输出 `PerceptionObs`。
-处理流程：估计道路颜色，生成道路 mask，逐行选择连续走廊，再融合左右摄像头结果。
-"""
+"""Road, lane-marking, and nearby-vehicle perception from stereo frames."""
 
 from dataclasses import dataclass
 
@@ -12,37 +7,48 @@ import numpy as np
 
 from controller.common import PerceptionObs, clamp
 from controller.opponent import detect_near_vehicle_obstacle_state
-from controller.params import COLOR_PROFILE, LINE_FOLLOW_PROFILE, OPPONENT_PROFILE, VISION_PROFILE
+from controller.params import (
+    COLOR_PROFILE,
+    LINE_FOLLOW_PROFILE,
+    OPPONENT_PROFILE,
+    VISION_PROFILE,
+)
 
 _RED_ENVIRONMENT_FLAG = 32
 
-# 跨帧轨迹记忆：存储上一帧的扫描中心点，用于在道路合并（超宽段）时
-# 通过时间连续性区分正确道路和干扰道路（如 complex CP3 区域）。
-_LAST_FRAME_CENTERS: list[tuple[float, float]] | None = None
-_LAST_FRAME_TIMESTAMP: float | None = None
+
+@dataclass
+class PerceptionState:
+    """Temporal scan anchors and frame-motion memory for one session."""
+
+    last_frame_centers: list[tuple[float, float]] | None = None
+    last_frame_timestamp: float | None = None
+    previous_motion_gray: np.ndarray | None = None
+    previous_motion_timestamp: float | None = None
+
+
+_STATE = PerceptionState()
 
 
 def _save_frame_centers(centers: list[tuple[float, float]]) -> None:
     """保存本帧扫描中心，供下一帧跨帧锚定使用。"""
-    global _LAST_FRAME_CENTERS
     if not centers:
-        _LAST_FRAME_CENTERS = None
+        _STATE.last_frame_centers = None
     else:
-        _LAST_FRAME_CENTERS = list(centers)
+        _STATE.last_frame_centers = list(centers)
 
 
 def _maybe_reset_perception_by_timestamp(timestamp: float | None) -> None:
     """时间戳回退或跳跃过大时清空跨帧记忆。"""
-    global _LAST_FRAME_CENTERS, _LAST_FRAME_TIMESTAMP
     if timestamp is None:
-        _LAST_FRAME_CENTERS = None
-        _LAST_FRAME_TIMESTAMP = None
+        _STATE.last_frame_centers = None
+        _STATE.last_frame_timestamp = None
         return
-    if _LAST_FRAME_TIMESTAMP is not None:
-        elapsed = float(timestamp) - float(_LAST_FRAME_TIMESTAMP)
+    if _STATE.last_frame_timestamp is not None:
+        elapsed = float(timestamp) - float(_STATE.last_frame_timestamp)
         if elapsed < 0.0 or elapsed > 2.0:
-            _LAST_FRAME_CENTERS = None
-    _LAST_FRAME_TIMESTAMP = float(timestamp)
+            _STATE.last_frame_centers = None
+    _STATE.last_frame_timestamp = float(timestamp)
 
 
 @dataclass
@@ -84,7 +90,12 @@ def _empty_obs(debug_flags: int = 1) -> PerceptionObs:
 def _valid_image(image) -> bool:
     """检查输入是否是三通道 BGR 图像。"""
 
-    return image is not None and hasattr(image, "shape") and len(image.shape) == 3 and image.shape[2] == 3
+    return (
+        image is not None
+        and hasattr(image, "shape")
+        and len(image.shape) == 3
+        and image.shape[2] == 3
+    )
 
 
 def _is_synthetic_grayscale_frame(image: np.ndarray) -> bool:
@@ -127,7 +138,9 @@ def _hue_delta(hue: np.ndarray, center: float) -> np.ndarray:
     return np.minimum(delta, 180.0 - delta)
 
 
-def _sampled_color_mask(hsv: np.ndarray, lab: np.ndarray, color_name: str) -> np.ndarray:
+def _sampled_color_mask(
+    hsv: np.ndarray, lab: np.ndarray, color_name: str
+) -> np.ndarray:
     """按采样色卡生成颜色 mask。
 
     功能：把 Webots 原始帧采样得到的 HSV/Lab 中位数和容差转换成布尔 mask。
@@ -195,7 +208,8 @@ def _build_masks(
     )
     # 路牙/路肩与沥青色相接近，但采样显示 Lab 亮度明显更高；只扣高亮部分，避免阴影污染真路面。
     curb_roi = _sampled_color_mask(hsv_roi, lab_roi, "curb_shoulder_light_gray") & (
-        lab_roi[:, :, 0] > COLOR_PROFILE["road_asphalt_dark_gray"]["lab_median"][0] + 10.0
+        lab_roi[:, :, 0]
+        > COLOR_PROFILE["road_asphalt_dark_gray"]["lab_median"][0] + 10.0
     )
     dark_road_roi = (road_core & ~non_road_roi & ~curb_roi).astype(np.uint8) * 255
 
@@ -217,7 +231,9 @@ def _build_masks(
     )
     # 蓝色 checkpoint 门是横跨道路的宽水平带；侧边蓝灰栏杆也是同色系，但只出现在边缘细长区域。
     # 只桥接行内蓝色覆盖足够宽的候选，避免把侧边栏杆直接并入 road mask。
-    row_ratio = np.count_nonzero(barrier_candidate, axis=1) / max(float(barrier_candidate.shape[1]), 1.0)
+    row_ratio = np.count_nonzero(barrier_candidate, axis=1) / max(
+        float(barrier_candidate.shape[1]), 1.0
+    )
     barrier_rows = row_ratio >= VISION_PROFILE["barrier_bridge_row_ratio"]
     barrier_roi = barrier_candidate & barrier_rows[:, None]
     road_roi[barrier_roi] = 255
@@ -234,7 +250,9 @@ def _build_masks(
     road_mask[top:, :] = road_roi
     edge_mask[top:, :] = edge_roi
 
-    texture_score = clamp(float(np.std(gray_roi)) / VISION_PROFILE["texture_gray_std_scale"], 0.0, 1.0)
+    texture_score = clamp(
+        float(np.std(gray_roi)) / VISION_PROFILE["texture_gray_std_scale"], 0.0, 1.0
+    )
     mask_fill_ratio = float(np.count_nonzero(road_roi)) / max(float(road_roi.size), 1.0)
     near_obstacle = False
     obstacle_x = 0.0
@@ -247,8 +265,20 @@ def _build_masks(
         except (TypeError, ValueError):
             current_time = 0.0
         if current_time >= OPPONENT_PROFILE["near_obstacle_min_timestamp"]:
-            near_obstacle, obstacle_x, obstacle_size = detect_near_vehicle_obstacle_state(image, OPPONENT_PROFILE)
-    return road_mask, edge_mask, texture_score, mask_fill_ratio, near_obstacle, obstacle_x, obstacle_size
+            (
+                near_obstacle,
+                obstacle_x,
+                obstacle_size,
+            ) = detect_near_vehicle_obstacle_state(image, OPPONENT_PROFILE)
+    return (
+        road_mask,
+        edge_mask,
+        texture_score,
+        mask_fill_ratio,
+        near_obstacle,
+        obstacle_x,
+        obstacle_size,
+    )
 
 
 def _segments_from_active(active: np.ndarray) -> list[tuple[int, int]]:
@@ -258,10 +288,14 @@ def _segments_from_active(active: np.ndarray) -> list[tuple[int, int]]:
         return []
     padded = np.concatenate(([False], active.astype(bool), [False]))
     changes = np.flatnonzero(padded[1:] != padded[:-1])
-    return [(int(changes[i]), int(changes[i + 1] - 1)) for i in range(0, len(changes), 2)]
+    return [
+        (int(changes[i]), int(changes[i + 1] - 1)) for i in range(0, len(changes), 2)
+    ]
 
 
-def _neighbors_are_road(road_cols: np.ndarray, left: int, right: int, profile: dict) -> bool:
+def _neighbors_are_road(
+    road_cols: np.ndarray, left: int, right: int, profile: dict
+) -> bool:
     """判断白线段左右紧邻是否都是深灰路面。
 
     功能：实现"真中心虚线在大片路面中间"的判别——护栏支柱外侧是路牙/红地/草而非路面。
@@ -287,7 +321,9 @@ def _neighbors_are_road(road_cols: np.ndarray, left: int, right: int, profile: d
     return left_ratio >= min_ratio and right_ratio >= min_ratio
 
 
-def _camera_line_state(image: np.ndarray, profile: dict) -> tuple[float, float, float] | None:
+def _camera_line_state(
+    image: np.ndarray, profile: dict
+) -> tuple[float, float, float] | None:
     """估计单个相机里的白色中心线。
 
     功能：找连续的窄白色虚线，输出近处偏移、线方向和置信度。
@@ -399,9 +435,13 @@ def _startup_single_line_candidate(
         return None
     if confidence < profile["min_confidence"]:
         return None
-    if not (profile["startup_offset_min"] <= offset <= profile["startup_offset_trust_max"]):
+    if not (
+        profile["startup_offset_min"] <= offset <= profile["startup_offset_trust_max"]
+    ):
         return None
-    if not (profile["startup_heading_min"] <= heading <= profile["startup_heading_max"]):
+    if not (
+        profile["startup_heading_min"] <= heading <= profile["startup_heading_max"]
+    ):
         return None
     return line
 
@@ -456,8 +496,12 @@ def _stereo_line_state(
         if single is not None:
             return single
         if red_environment is None:
-            red_environment = _is_red_environment(left_img) or _is_red_environment(right_img)
-        single = _red_environment_single_line_candidate(left or right, profile, bool(red_environment))
+            red_environment = _is_red_environment(left_img) or _is_red_environment(
+                right_img
+            )
+        single = _red_environment_single_line_candidate(
+            left or right, profile, bool(red_environment)
+        )
         if single is not None:
             return single
         return 0.0, 0.0, 0.0
@@ -469,7 +513,9 @@ def _stereo_line_state(
     return clamp(offset, -1.0, 1.0), clamp(heading, -1.0, 1.0), confidence
 
 
-def _merge_close_segments(segments: list[tuple[int, int]], max_gap: int | None = None) -> list[tuple[int, int]]:
+def _merge_close_segments(
+    segments: list[tuple[int, int]], max_gap: int | None = None
+) -> list[tuple[int, int]]:
     """合并被车道虚线或护栏细缝切开的相邻道路段。"""
 
     if not segments:
@@ -486,7 +532,9 @@ def _merge_close_segments(segments: list[tuple[int, int]], max_gap: int | None =
     return merged
 
 
-def _road_segments(mask: np.ndarray, y: int, row_band: int, max_gap: int | None = None) -> list[tuple[int, int]]:
+def _road_segments(
+    mask: np.ndarray, y: int, row_band: int, max_gap: int | None = None
+) -> list[tuple[int, int]]:
     """从道路 mask 的水平横带中提取连续道路区间。"""
 
     y0 = max(int(y) - row_band, 0)
@@ -497,7 +545,9 @@ def _road_segments(mask: np.ndarray, y: int, row_band: int, max_gap: int | None 
     return _merge_close_segments(_segments_from_active(active), max_gap=max_gap)
 
 
-def _edge_fallback_segments(edge_mask: np.ndarray, y: int, row_band: int) -> list[tuple[int, int]]:
+def _edge_fallback_segments(
+    edge_mask: np.ndarray, y: int, row_band: int
+) -> list[tuple[int, int]]:
     """从边缘横带中推断候选走廊。
 
     功能：在道路 mask 没有可用区间时，用相邻边缘之间的区域做兜底。
@@ -515,7 +565,10 @@ def _edge_fallback_segments(edge_mask: np.ndarray, y: int, row_band: int) -> lis
         return []
 
     edge_centers = [int((left + right) * 0.5) for left, right in edge_segments]
-    return [(edge_centers[index], edge_centers[index + 1]) for index in range(len(edge_centers) - 1)]
+    return [
+        (edge_centers[index], edge_centers[index + 1])
+        for index in range(len(edge_centers) - 1)
+    ]
 
 
 def _filter_segments(
@@ -555,7 +608,9 @@ def _filter_fallback_segments(
         return []
 
     min_width = float(VISION_PROFILE["fallback_min_segment_width"])
-    initial_center_limit = float(width) * VISION_PROFILE["fallback_initial_center_max_offset"]
+    initial_center_limit = (
+        float(width) * VISION_PROFILE["fallback_initial_center_max_offset"]
+    )
     narrow_jump_limit = float(width) * VISION_PROFILE["fallback_narrow_jump_max_ratio"]
     image_center = float(width) * 0.5
 
@@ -632,7 +687,9 @@ def _pick_segment(
         else VISION_PROFILE["early_max_segment_width_ratio"]
     )
     max_gap = None
-    if near_obstacle and y >= int(road_mask.shape[0] * OPPONENT_PROFILE["near_obstacle_scan_y_ratio"]):
+    if near_obstacle and y >= int(
+        road_mask.shape[0] * OPPONENT_PROFILE["near_obstacle_scan_y_ratio"]
+    ):
         max_gap = int(OPPONENT_PROFILE["near_obstacle_segment_gap"])
     candidates = _filter_segments(
         _road_segments(road_mask, y, row_band, max_gap=max_gap),
@@ -646,32 +703,49 @@ def _pick_segment(
             width,
             max_width_ratio=max_width_ratio,
         )
-        candidates = _filter_fallback_segments(candidates, width, previous_center, has_previous)
+        candidates = _filter_fallback_segments(
+            candidates, width, previous_center, has_previous
+        )
         used_fallback = bool(candidates)
     if not candidates:
         return None, used_fallback
 
-    best = min(candidates, key=lambda item: abs(((item[0] + item[1]) * 0.5) - previous_center))
+    best = min(
+        candidates, key=lambda item: abs(((item[0] + item[1]) * 0.5) - previous_center)
+    )
 
     # ── 跨帧轨迹锚定：超宽段（道路合并）时，优先选靠近上一帧同高度中心的分段 ──
     temporal_anchor: float | None = None
-    if wide_localize_enabled and _LAST_FRAME_CENTERS:
+    if wide_localize_enabled and _STATE.last_frame_centers:
         height = road_mask.shape[0]
         best_y_dist = float("inf")
-        for cx, cy in _LAST_FRAME_CENTERS:
+        for cx, cy in _STATE.last_frame_centers:
             dist = abs(cy - float(y))
             if dist < best_y_dist:
                 best_y_dist = dist
                 temporal_anchor = cx
         best_candidate_width = max(c[1] - c[0] for c in candidates)
-        temporal_window = float(width) * VISION_PROFILE.get("temporal_anchor_window_ratio", 0.38)
-        if best_candidate_width > float(width) * VISION_PROFILE["wide_segment_localize_ratio"] * 0.7:
-            if temporal_anchor is not None and abs(temporal_anchor - previous_center) > temporal_window * 0.5:
+        temporal_window = float(width) * VISION_PROFILE.get(
+            "temporal_anchor_window_ratio", 0.38
+        )
+        if (
+            best_candidate_width
+            > float(width) * VISION_PROFILE["wide_segment_localize_ratio"] * 0.7
+        ):
+            if (
+                temporal_anchor is not None
+                and abs(temporal_anchor - previous_center) > temporal_window * 0.5
+            ):
                 previous_center = previous_center * 0.35 + temporal_anchor * 0.65
                 # 重新选最佳分段（因为 previous_center 已调整）
-                best = min(candidates, key=lambda item: abs(((item[0] + item[1]) * 0.5) - previous_center))
+                best = min(
+                    candidates,
+                    key=lambda item: abs(((item[0] + item[1]) * 0.5) - previous_center),
+                )
 
-    best = _localize_wide_segment(best, previous_center, width, enabled=wide_localize_enabled)
+    best = _localize_wide_segment(
+        best, previous_center, width, enabled=wide_localize_enabled
+    )
     center = (best[0] + best[1]) * 0.5
     max_jump = float(width) * VISION_PROFILE["max_center_jump_ratio"]
     if has_previous and abs(center - previous_center) > max_jump:
@@ -709,7 +783,9 @@ def _score_scan(
     if center_arr.size >= 2:
         center_jump = np.abs(np.diff(center_arr))
         center_stability = clamp(
-            1.0 - float(np.mean(center_jump)) / (640.0 * VISION_PROFILE["max_center_jump_ratio"]),
+            1.0
+            - float(np.mean(center_jump))
+            / (640.0 * VISION_PROFILE["max_center_jump_ratio"]),
             0.0,
             1.0,
         )
@@ -743,7 +819,9 @@ def _score_scan(
     return clamp(confidence, 0.0, 1.0), debug_flags
 
 
-def _scan_image(image: np.ndarray, timestamp=None, enable_opp: bool = True) -> _CameraScan:
+def _scan_image(
+    image: np.ndarray, timestamp=None, enable_opp: bool = True
+) -> _CameraScan:
     """按扫描线跟踪单张图像的道路走廊。
 
     功能：输出中心点、左右边界点、道路宽度和置信度。
@@ -767,12 +845,24 @@ def _scan_image(image: np.ndarray, timestamp=None, enable_opp: bool = True) -> _
             except (TypeError, ValueError):
                 current_time = 0.0
             if current_time >= OPPONENT_PROFILE["near_obstacle_min_timestamp"]:
-                scan.near_obstacle, scan.obstacle_x, scan.obstacle_size = detect_near_vehicle_obstacle_state(
+                (
+                    scan.near_obstacle,
+                    scan.obstacle_x,
+                    scan.obstacle_size,
+                ) = detect_near_vehicle_obstacle_state(
                     image,
                     OPPONENT_PROFILE,
                 )
         return scan
-    road_mask, edge_mask, texture_score, mask_fill_ratio, near_obstacle, obstacle_x, obstacle_size = _build_masks(
+    (
+        road_mask,
+        edge_mask,
+        texture_score,
+        mask_fill_ratio,
+        near_obstacle,
+        obstacle_x,
+        obstacle_size,
+    ) = _build_masks(
         image,
         timestamp,
         enable_opp,
@@ -857,7 +947,10 @@ def _scan_image(image: np.ndarray, timestamp=None, enable_opp: bool = True) -> _
 def _usable(scan: _CameraScan) -> bool:
     """判断单侧扫描结果是否足以参与融合。"""
 
-    return scan.center_points.size > 0 and scan.confidence >= VISION_PROFILE["min_camera_confidence"]
+    return (
+        scan.center_points.size > 0
+        and scan.confidence >= VISION_PROFILE["min_camera_confidence"]
+    )
 
 
 def _near_center(scan: _CameraScan) -> float:
@@ -885,7 +978,9 @@ def _to_obs(scan: _CameraScan, debug_flags: int | None = None) -> PerceptionObs:
     )
 
 
-def _fused_obstacle(left_scan: _CameraScan, right_scan: _CameraScan) -> tuple[bool, float, float]:
+def _fused_obstacle(
+    left_scan: _CameraScan, right_scan: _CameraScan
+) -> tuple[bool, float, float]:
     """融合双目近车检测结果。
 
     功能：给 policy 一个稳定的左/中/右对手位置。
@@ -902,7 +997,13 @@ def _fused_obstacle(left_scan: _CameraScan, right_scan: _CameraScan) -> tuple[bo
     if not candidates:
         return bool(left_scan.near_obstacle or right_scan.near_obstacle), 0.0, 0.0
     total = sum(max(float(scan.obstacle_size), 1e-6) for scan in candidates)
-    x = sum(float(scan.obstacle_x) * max(float(scan.obstacle_size), 1e-6) for scan in candidates) / total
+    x = (
+        sum(
+            float(scan.obstacle_x) * max(float(scan.obstacle_size), 1e-6)
+            for scan in candidates
+        )
+        / total
+    )
     size = max(float(scan.obstacle_size) for scan in candidates)
     return True, clamp(x, -1.0, 1.0), size
 
@@ -920,15 +1021,21 @@ def _fuse_scans(left_scan: _CameraScan, right_scan: _CameraScan) -> PerceptionOb
     right_ok = _usable(right_scan)
     if left_ok and not right_ok:
         obs = _to_obs(left_scan)
-        obs.near_obstacle, obs.obstacle_x, obs.obstacle_size = _fused_obstacle(left_scan, right_scan)
+        obs.near_obstacle, obs.obstacle_x, obs.obstacle_size = _fused_obstacle(
+            left_scan, right_scan
+        )
         return obs
     if right_ok and not left_ok:
         obs = _to_obs(right_scan)
-        obs.near_obstacle, obs.obstacle_x, obs.obstacle_size = _fused_obstacle(left_scan, right_scan)
+        obs.near_obstacle, obs.obstacle_x, obs.obstacle_size = _fused_obstacle(
+            left_scan, right_scan
+        )
         return obs
     if not left_ok and not right_ok:
         obs = _empty_obs(debug_flags=left_scan.debug_flags | right_scan.debug_flags | 1)
-        obs.near_obstacle, obs.obstacle_x, obs.obstacle_size = _fused_obstacle(left_scan, right_scan)
+        obs.near_obstacle, obs.obstacle_x, obs.obstacle_size = _fused_obstacle(
+            left_scan, right_scan
+        )
         return obs
 
     center_gap = abs(_near_center(left_scan) - _near_center(right_scan))
@@ -941,7 +1048,9 @@ def _fuse_scans(left_scan: _CameraScan, right_scan: _CameraScan) -> PerceptionOb
         or left_scan.confidence < merge_confidence
         or right_scan.confidence < merge_confidence
     ):
-        chosen = left_scan if left_scan.confidence >= right_scan.confidence else right_scan
+        chosen = (
+            left_scan if left_scan.confidence >= right_scan.confidence else right_scan
+        )
         flags = chosen.debug_flags
         if center_gap > 640.0 * VISION_PROFILE["fusion_max_offset_gap"]:
             flags |= 8
@@ -953,12 +1062,24 @@ def _fuse_scans(left_scan: _CameraScan, right_scan: _CameraScan) -> PerceptionOb
         obs.obstacle_size = obstacle_size
         return obs
 
-    center_points = np.concatenate([left_scan.center_points, right_scan.center_points], axis=0)
-    left_edge_points = np.concatenate([left_scan.left_edge_points, right_scan.left_edge_points], axis=0)
-    right_edge_points = np.concatenate([left_scan.right_edge_points, right_scan.right_edge_points], axis=0)
-    weights = np.array([len(left_scan.center_points), len(right_scan.center_points)], dtype=np.float32)
-    confidences = np.array([left_scan.confidence, right_scan.confidence], dtype=np.float32)
-    width_values = np.array([left_scan.road_width_est, right_scan.road_width_est], dtype=np.float32)
+    center_points = np.concatenate(
+        [left_scan.center_points, right_scan.center_points], axis=0
+    )
+    left_edge_points = np.concatenate(
+        [left_scan.left_edge_points, right_scan.left_edge_points], axis=0
+    )
+    right_edge_points = np.concatenate(
+        [left_scan.right_edge_points, right_scan.right_edge_points], axis=0
+    )
+    weights = np.array(
+        [len(left_scan.center_points), len(right_scan.center_points)], dtype=np.float32
+    )
+    confidences = np.array(
+        [left_scan.confidence, right_scan.confidence], dtype=np.float32
+    )
+    width_values = np.array(
+        [left_scan.road_width_est, right_scan.road_width_est], dtype=np.float32
+    )
     confidence = float(np.average(confidences, weights=weights))
     road_width_est = float(np.average(width_values, weights=weights))
     return PerceptionObs(
@@ -1009,19 +1130,15 @@ def _with_line_state(
 
 
 def reset_perception_state() -> None:
-    """重置感知跨帧状态。
+    """Replace all perception memory with a clean session state."""
 
-    功能：清空跨帧轨迹记忆。
-    参数：无。
-    返回：无。
-    逻辑：测试或新仿真开始前调用。
-    """
-    global _LAST_FRAME_CENTERS, _LAST_FRAME_TIMESTAMP
-    _LAST_FRAME_CENTERS = None
-    _LAST_FRAME_TIMESTAMP = None
+    global _STATE
+    _STATE = PerceptionState()
 
 
-def extract_observation(left_img, right_img, timestamp=None, profile=None) -> PerceptionObs:
+def extract_observation(
+    left_img, right_img, timestamp=None, profile=None
+) -> PerceptionObs:
     """Extract a fused track observation from the stereo camera frames.
 
     ``profile`` controls whether opponent detection and frame-motion blockage
@@ -1037,8 +1154,16 @@ def extract_observation(left_img, right_img, timestamp=None, profile=None) -> Pe
     else:
         enable_opp = bool(profile.get("enable_opponent", False))
 
-    left_scan = _scan_image(left_img, timestamp, enable_opp) if _valid_image(left_img) else _empty_scan()
-    right_scan = _scan_image(right_img, timestamp, enable_opp) if _valid_image(right_img) else _empty_scan()
+    left_scan = (
+        _scan_image(left_img, timestamp, enable_opp)
+        if _valid_image(left_img)
+        else _empty_scan()
+    )
+    right_scan = (
+        _scan_image(right_img, timestamp, enable_opp)
+        if _valid_image(right_img)
+        else _empty_scan()
+    )
     obs = _fuse_scans(left_scan, right_scan)
     obs = _with_line_state(
         obs,
@@ -1054,10 +1179,6 @@ def extract_observation(left_img, right_img, timestamp=None, profile=None) -> Pe
     return obs
 
 
-_PREV_MOTION_GRAY = None
-_PREV_MOTION_T = None
-
-
 def _update_frame_motion(image, timestamp=None) -> float:
     """估计帧间图像变化量（下采样灰度平均绝对差）。
 
@@ -1068,29 +1189,27 @@ def _update_frame_motion(image, timestamp=None) -> float:
         车真在开时场景流动、MAD 大，被顶住不动时画面几乎不变、MAD≈传感器噪声。
     """
 
-    global _PREV_MOTION_GRAY, _PREV_MOTION_T
     if not _valid_image(image):
         return 100.0
     small = cv2.resize(
         cv2.cvtColor(image, cv2.COLOR_BGR2GRAY), (64, 48), interpolation=cv2.INTER_AREA
     )
     if (
-        _PREV_MOTION_T is not None
+        _STATE.previous_motion_timestamp is not None
         and timestamp is not None
-        and float(timestamp) < _PREV_MOTION_T - 1e-6
+        and float(timestamp) < _STATE.previous_motion_timestamp - 1e-6
     ):
-        _PREV_MOTION_GRAY = None  # 仿真重启/时间回退：清上一帧
-    prev = _PREV_MOTION_GRAY
-    _PREV_MOTION_GRAY = small
-    _PREV_MOTION_T = None if timestamp is None else float(timestamp)
+        _STATE.previous_motion_gray = None  # 仿真重启/时间回退：清上一帧
+    prev = _STATE.previous_motion_gray
+    _STATE.previous_motion_gray = small
+    _STATE.previous_motion_timestamp = None if timestamp is None else float(timestamp)
     if prev is None:
         return 100.0
     return float(np.mean(np.abs(small.astype(np.int16) - prev.astype(np.int16))))
 
 
 def reset_frame_motion_state() -> None:
-    """清空帧间运动检测的跨帧状态（新仿真/测试前调用）。"""
+    """Clear only frame-motion memory while retaining road anchors."""
 
-    global _PREV_MOTION_GRAY, _PREV_MOTION_T
-    _PREV_MOTION_GRAY = None
-    _PREV_MOTION_T = None
+    _STATE.previous_motion_gray = None
+    _STATE.previous_motion_timestamp = None

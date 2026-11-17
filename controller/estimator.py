@@ -1,27 +1,36 @@
-"""赛道几何估计模块。
-
-功能概述：把感知中心点转换成稳定的赛道状态。
-输入输出：输入 `PerceptionObs` 和时间戳，输出 `TrackState`。
-处理流程：清洗中心点，按 progress 拟合中心线，估计偏移、朝向和曲率，再按置信度平滑。
-"""
+"""Convert perception output into a stable geometric track state."""
 
 import math
+from dataclasses import dataclass
 
 import numpy as np
 
 from controller.common import PerceptionObs, TrackState, clamp
 from controller.params import ESTIMATOR_PROFILE
 
-_LAST_TRACK = TrackState(0.0, 0.0, 0.0, 0.0, 0.0, True)
-_LAST_TIMESTAMP = None
-_LAST_RED_ENVIRONMENT = False
-_RED_ENVIRONMENT_STREAK = 0
 _RED_ENVIRONMENT_FLAG = 32
 _RED_ENVIRONMENT_LATCH_FRAMES = 3
-_LINE_MEMORY_FRAMES = 0
-_LINE_MEMORY_OFFSET = 0.0
-_LINE_MEMORY_HEADING = 0.0
-_LINE_MEMORY_CONFIDENCE = 0.0
+
+
+@dataclass
+class EstimatorState:
+    """Cross-frame geometry and line memory for one controller session."""
+
+    last_track: TrackState | None = None
+    last_timestamp: float | None = None
+    last_red_environment: bool = False
+    red_environment_streak: int = 0
+    line_memory_frames: int = 0
+    line_memory_offset: float = 0.0
+    line_memory_heading: float = 0.0
+    line_memory_confidence: float = 0.0
+
+    def __post_init__(self) -> None:
+        if self.last_track is None:
+            self.last_track = TrackState(0.0, 0.0, 0.0, 0.0, 0.0, True)
+
+
+_STATE = EstimatorState()
 
 
 def _lost_track(
@@ -40,7 +49,7 @@ def _lost_track(
     """
 
     if red_environment is None:
-        red_environment = _LAST_TRACK.red_environment
+        red_environment = _STATE.last_track.red_environment
     if obs is not None:
         line_offset = clamp(float(obs.line_offset), -1.0, 1.0)
         line_heading = clamp(float(obs.line_heading), -1.0, 1.0)
@@ -49,25 +58,25 @@ def _lost_track(
         obstacle_x = clamp(float(obs.obstacle_x), -1.0, 1.0)
         obstacle_size = max(float(obs.obstacle_size), 0.0)
     else:
-        line_offset = _LAST_TRACK.line_offset
-        line_heading = _LAST_TRACK.line_heading
+        line_offset = _STATE.last_track.line_offset
+        line_heading = _STATE.last_track.line_heading
         line_confidence = 0.0
-        near_obstacle = _LAST_TRACK.near_obstacle
-        obstacle_x = _LAST_TRACK.obstacle_x
-        obstacle_size = _LAST_TRACK.obstacle_size
+        near_obstacle = _STATE.last_track.near_obstacle
+        obstacle_x = _STATE.last_track.obstacle_x
+        obstacle_size = _STATE.last_track.obstacle_size
     return TrackState(
-        _LAST_TRACK.lateral_error * ESTIMATOR_PROFILE["lost_lateral_decay"],
-        _LAST_TRACK.heading_error * ESTIMATOR_PROFILE["lost_heading_decay"],
-        _LAST_TRACK.curvature * ESTIMATOR_PROFILE["lost_curvature_decay"],
-        _LAST_TRACK.lookahead_error * ESTIMATOR_PROFILE["lost_lookahead_decay"],
+        _STATE.last_track.lateral_error * ESTIMATOR_PROFILE["lost_lateral_decay"],
+        _STATE.last_track.heading_error * ESTIMATOR_PROFILE["lost_heading_decay"],
+        _STATE.last_track.curvature * ESTIMATOR_PROFILE["lost_curvature_decay"],
+        _STATE.last_track.lookahead_error * ESTIMATOR_PROFILE["lost_lookahead_decay"],
         clamp(confidence, 0.0, ESTIMATOR_PROFILE["lost_confidence"]),
         True,
         red_environment,
         line_offset,
         line_heading,
         line_confidence,
-        _LAST_TRACK.left_margin_near,
-        _LAST_TRACK.right_margin_near,
+        _STATE.last_track.left_margin_near,
+        _STATE.last_track.right_margin_near,
         near_obstacle,
         obstacle_x,
         obstacle_size,
@@ -145,7 +154,9 @@ def _line_weight(line_confidence: float) -> float:
     return clamp(usable, 0.0, 1.0)
 
 
-def _line_target_trust(obs: PerceptionObs, timestamp: float, red_environment: bool) -> float:
+def _line_target_trust(
+    obs: PerceptionObs, timestamp: float, red_environment: bool
+) -> float:
     """计算白线目标是否足以进入主几何链路。
 
     功能：把白线置信度、offset 形态和 road mask 质量合成融合权重。
@@ -169,20 +180,27 @@ def _line_target_trust(obs: PerceptionObs, timestamp: float, red_environment: bo
         <= obs.line_heading
         <= ESTIMATOR_PROFILE["line_startup_heading_max"]
     )
-    normal_valid = abs(obs.line_offset) <= ESTIMATOR_PROFILE["line_target_normal_offset_max"]
+    normal_valid = (
+        abs(obs.line_offset) <= ESTIMATOR_PROFILE["line_target_normal_offset_max"]
+    )
     if not startup_valid and not normal_valid:
         return 0.0
 
     if startup_valid:
         scale = ESTIMATOR_PROFILE["line_target_startup_scale"]
-    elif obs.confidence <= ESTIMATOR_PROFILE["line_target_road_confidence_max"] or obs.debug_flags & 4:
+    elif (
+        obs.confidence <= ESTIMATOR_PROFILE["line_target_road_confidence_max"]
+        or obs.debug_flags & 4
+    ):
         scale = ESTIMATOR_PROFILE["line_target_unreliable_road_scale"]
     else:
         scale = ESTIMATOR_PROFILE["line_target_normal_scale"]
     return clamp(base * scale, 0.0, 1.0)
 
 
-def _update_line_memory(obs: PerceptionObs, line_trust: float, timestamp: float, red_environment: bool) -> float:
+def _update_line_memory(
+    obs: PerceptionObs, line_trust: float, timestamp: float, red_environment: bool
+) -> float:
     """维护发车阶段的可信白线记忆。
 
     功能：白线短暂丢失时继续使用最近一次可信白线，避免 fake road center 抢回主目标。
@@ -191,9 +209,9 @@ def _update_line_memory(obs: PerceptionObs, line_trust: float, timestamp: float,
     逻辑：只记住已经通过信任门控的右侧发车白线；窗口外或记忆耗尽后自动失效。
     """
 
-    global _LINE_MEMORY_FRAMES, _LINE_MEMORY_OFFSET, _LINE_MEMORY_HEADING, _LINE_MEMORY_CONFIDENCE
-
-    in_startup = red_environment and timestamp <= ESTIMATOR_PROFILE["line_startup_until"]
+    in_startup = (
+        red_environment and timestamp <= ESTIMATOR_PROFILE["line_startup_until"]
+    )
     startup_line = (
         ESTIMATOR_PROFILE["line_startup_offset_min"]
         <= obs.line_offset
@@ -203,26 +221,32 @@ def _update_line_memory(obs: PerceptionObs, line_trust: float, timestamp: float,
         <= ESTIMATOR_PROFILE["line_startup_heading_max"]
     )
     if line_trust > 0.0 and in_startup and startup_line:
-        _LINE_MEMORY_FRAMES = int(ESTIMATOR_PROFILE["line_startup_memory_frames"])
-        _LINE_MEMORY_OFFSET = clamp(float(obs.line_offset), -1.0, 1.0)
-        _LINE_MEMORY_HEADING = clamp(float(obs.line_heading), -1.0, 1.0)
-        _LINE_MEMORY_CONFIDENCE = clamp(float(obs.line_confidence), 0.0, 1.0)
+        _STATE.line_memory_frames = int(ESTIMATOR_PROFILE["line_startup_memory_frames"])
+        _STATE.line_memory_offset = clamp(float(obs.line_offset), -1.0, 1.0)
+        _STATE.line_memory_heading = clamp(float(obs.line_heading), -1.0, 1.0)
+        _STATE.line_memory_confidence = clamp(float(obs.line_confidence), 0.0, 1.0)
         return line_trust
 
-    if not in_startup or _LINE_MEMORY_FRAMES <= 0:
+    if not in_startup or _STATE.line_memory_frames <= 0:
         if not in_startup:
-            _LINE_MEMORY_FRAMES = 0
+            _STATE.line_memory_frames = 0
         return line_trust
 
-    _LINE_MEMORY_FRAMES -= 1
-    _LINE_MEMORY_OFFSET *= ESTIMATOR_PROFILE["line_startup_memory_value_decay"]
-    _LINE_MEMORY_HEADING *= ESTIMATOR_PROFILE["line_startup_memory_value_decay"]
-    _LINE_MEMORY_CONFIDENCE *= ESTIMATOR_PROFILE["line_startup_memory_value_decay"]
-    obs.line_offset = _LINE_MEMORY_OFFSET
-    obs.line_heading = _LINE_MEMORY_HEADING
-    obs.line_confidence = _LINE_MEMORY_CONFIDENCE
+    _STATE.line_memory_frames -= 1
+    _STATE.line_memory_offset *= ESTIMATOR_PROFILE["line_startup_memory_value_decay"]
+    _STATE.line_memory_heading *= ESTIMATOR_PROFILE["line_startup_memory_value_decay"]
+    _STATE.line_memory_confidence *= ESTIMATOR_PROFILE[
+        "line_startup_memory_value_decay"
+    ]
+    obs.line_offset = _STATE.line_memory_offset
+    obs.line_heading = _STATE.line_memory_heading
+    obs.line_confidence = _STATE.line_memory_confidence
     remembered_trust = _line_target_trust(obs, timestamp, red_environment)
-    return clamp(remembered_trust * ESTIMATOR_PROFILE["line_startup_memory_trust_scale"], 0.0, 1.0)
+    return clamp(
+        remembered_trust * ESTIMATOR_PROFILE["line_startup_memory_trust_scale"],
+        0.0,
+        1.0,
+    )
 
 
 def _line_guidance_targets(obs: PerceptionObs) -> tuple[float, float]:
@@ -238,14 +262,18 @@ def _line_guidance_targets(obs: PerceptionObs) -> tuple[float, float]:
 
     line_offset = clamp(float(obs.line_offset), -1.0, 1.0)
     line_heading = clamp(float(obs.line_heading), -1.0, 1.0)
-    projected = line_offset + line_heading * ESTIMATOR_PROFILE["line_lookahead_projection"]
+    projected = (
+        line_offset + line_heading * ESTIMATOR_PROFILE["line_lookahead_projection"]
+    )
     conflict = (
         abs(line_offset) >= ESTIMATOR_PROFILE["line_offset_priority_min"]
         and line_offset * line_heading < 0.0
     )
     if conflict:
         line_heading *= ESTIMATOR_PROFILE["line_conflict_heading_scale"]
-        min_projected = abs(line_offset) * ESTIMATOR_PROFILE["line_conflict_projected_scale"]
+        min_projected = (
+            abs(line_offset) * ESTIMATOR_PROFILE["line_conflict_projected_scale"]
+        )
         projected = math.copysign(max(abs(projected), min_projected), line_offset)
     return clamp(line_heading, -1.0, 1.0), clamp(projected, -1.0, 1.0)
 
@@ -266,13 +294,28 @@ def _apply_line_target(
     lookahead_weight = line_trust * ESTIMATOR_PROFILE["line_lookahead_weight"]
     line_heading, projected_lookahead = _line_guidance_targets(obs)
     return (
-        clamp(lateral_error * (1.0 - lateral_weight) + obs.line_offset * lateral_weight, -1.0, 1.0),
-        clamp(heading_error * (1.0 - heading_weight) + line_heading * heading_weight, -1.0, 1.0),
-        clamp(lookahead_error * (1.0 - lookahead_weight) + projected_lookahead * lookahead_weight, -1.0, 1.0),
+        clamp(
+            lateral_error * (1.0 - lateral_weight) + obs.line_offset * lateral_weight,
+            -1.0,
+            1.0,
+        ),
+        clamp(
+            heading_error * (1.0 - heading_weight) + line_heading * heading_weight,
+            -1.0,
+            1.0,
+        ),
+        clamp(
+            lookahead_error * (1.0 - lookahead_weight)
+            + projected_lookahead * lookahead_weight,
+            -1.0,
+            1.0,
+        ),
     )
 
 
-def _line_only_track(obs: PerceptionObs, timestamp: float, red_environment: bool, line_trust: float) -> TrackState:
+def _line_only_track(
+    obs: PerceptionObs, timestamp: float, red_environment: bool, line_trust: float
+) -> TrackState:
     """在 road mask 不可信但白线可信时生成路线状态。
 
     功能：避免 fake road center 把车带到路外；无可靠 road 时仍让车朝白线回中。
@@ -283,7 +326,10 @@ def _line_only_track(obs: PerceptionObs, timestamp: float, red_environment: bool
 
     del timestamp
     confidence = clamp(
-        max(ESTIMATOR_PROFILE["lost_confidence"] + 0.04, obs.line_confidence * ESTIMATOR_PROFILE["line_target_confidence_scale"]),
+        max(
+            ESTIMATOR_PROFILE["lost_confidence"] + 0.04,
+            obs.line_confidence * ESTIMATOR_PROFILE["line_target_confidence_scale"],
+        ),
         0.0,
         1.0,
     )
@@ -293,18 +339,38 @@ def _line_only_track(obs: PerceptionObs, timestamp: float, red_environment: bool
     lookahead_error = clamp(projected_lookahead * line_trust, -1.0, 1.0)
     alpha = _smooth_alpha(confidence)
     track = TrackState(
-        _smooth_limited(_LAST_TRACK.lateral_error, lateral_error, alpha, ESTIMATOR_PROFILE["max_error_delta"]),
-        _smooth_limited(_LAST_TRACK.heading_error, heading_error, alpha, ESTIMATOR_PROFILE["max_heading_delta"]),
-        _smooth_limited(_LAST_TRACK.curvature, 0.0, ESTIMATOR_PROFILE["curve_smooth_alpha"], ESTIMATOR_PROFILE["max_curvature_delta"]),
-        _smooth_limited(_LAST_TRACK.lookahead_error, lookahead_error, alpha, ESTIMATOR_PROFILE["max_error_delta"]),
+        _smooth_limited(
+            _STATE.last_track.lateral_error,
+            lateral_error,
+            alpha,
+            ESTIMATOR_PROFILE["max_error_delta"],
+        ),
+        _smooth_limited(
+            _STATE.last_track.heading_error,
+            heading_error,
+            alpha,
+            ESTIMATOR_PROFILE["max_heading_delta"],
+        ),
+        _smooth_limited(
+            _STATE.last_track.curvature,
+            0.0,
+            ESTIMATOR_PROFILE["curve_smooth_alpha"],
+            ESTIMATOR_PROFILE["max_curvature_delta"],
+        ),
+        _smooth_limited(
+            _STATE.last_track.lookahead_error,
+            lookahead_error,
+            alpha,
+            ESTIMATOR_PROFILE["max_error_delta"],
+        ),
         confidence,
         False,
         red_environment,
         clamp(float(obs.line_offset), -1.0, 1.0),
         clamp(float(obs.line_heading), -1.0, 1.0),
         clamp(float(obs.line_confidence), 0.0, 1.0),
-        _LAST_TRACK.left_margin_near,
-        _LAST_TRACK.right_margin_near,
+        _STATE.last_track.left_margin_near,
+        _STATE.last_track.right_margin_near,
         bool(obs.near_obstacle),
         clamp(float(obs.obstacle_x), -1.0, 1.0),
         max(float(obs.obstacle_size), 0.0),
@@ -362,8 +428,14 @@ def _curvature_trust(n_points: int, y_span: float, fit_score: float) -> float:
     甚至符号相反——在全程右弯的赛道上凭空出现"满信心左弯"）。三项必须同时达标才信曲率。
     """
 
-    span = max(ESTIMATOR_PROFILE["curvature_full_points"] - ESTIMATOR_PROFILE["poly2_min_points"], 1.0)
-    n_score = clamp((float(n_points) - ESTIMATOR_PROFILE["poly2_min_points"]) / span, 0.0, 1.0)
+    span = max(
+        ESTIMATOR_PROFILE["curvature_full_points"]
+        - ESTIMATOR_PROFILE["poly2_min_points"],
+        1.0,
+    )
+    n_score = clamp(
+        (float(n_points) - ESTIMATOR_PROFILE["poly2_min_points"]) / span, 0.0, 1.0
+    )
     span_score = clamp(y_span / ESTIMATOR_PROFILE["curvature_min_y_span"], 0.0, 1.0)
     return clamp(n_score * span_score * clamp(fit_score, 0.0, 1.0), 0.0, 1.0)
 
@@ -386,11 +458,15 @@ def _curvature_from_fit(
     if degree == 2:
         value = float(coeffs[0]) * ESTIMATOR_PROFILE["curvature_gain"]
     else:
-        value = (lookahead_error - lateral_error) * ESTIMATOR_PROFILE["fallback_curvature_gain"]
+        value = (lookahead_error - lateral_error) * ESTIMATOR_PROFILE[
+            "fallback_curvature_gain"
+        ]
     return clamp(value * trust, -1.0, 1.0)
 
 
-def _fit_error_score(progress: np.ndarray, x_norm: np.ndarray, coeffs: np.ndarray) -> float:
+def _fit_error_score(
+    progress: np.ndarray, x_norm: np.ndarray, coeffs: np.ndarray
+) -> float:
     """把中心线拟合误差转换成置信度分数。"""
 
     fitted = np.polyval(coeffs, progress)
@@ -398,7 +474,9 @@ def _fit_error_score(progress: np.ndarray, x_norm: np.ndarray, coeffs: np.ndarra
     return clamp(1.0 - rmse / ESTIMATOR_PROFILE["max_fit_error"], 0.0, 1.0)
 
 
-def _geometry_confidence(obs: PerceptionObs, points: np.ndarray, y_span: float, fit_score: float) -> float:
+def _geometry_confidence(
+    obs: PerceptionObs, points: np.ndarray, y_span: float, fit_score: float
+) -> float:
     """计算几何置信度。
 
     功能：综合感知置信度、点数、y 覆盖范围、拟合误差和道路宽度。
@@ -408,9 +486,13 @@ def _geometry_confidence(obs: PerceptionObs, points: np.ndarray, y_span: float, 
     """
 
     obs_score = clamp(obs.confidence, 0.0, 1.0)
-    point_score = clamp(len(points) / float(ESTIMATOR_PROFILE["min_good_points"]), 0.0, 1.0)
+    point_score = clamp(
+        len(points) / float(ESTIMATOR_PROFILE["min_good_points"]), 0.0, 1.0
+    )
     span_score = clamp(y_span / ESTIMATOR_PROFILE["min_y_span_good"], 0.0, 1.0)
-    width_score = clamp(obs.road_width_est / ESTIMATOR_PROFILE["min_road_width_for_conf"], 0.0, 1.0)
+    width_score = clamp(
+        obs.road_width_est / ESTIMATOR_PROFILE["min_road_width_for_conf"], 0.0, 1.0
+    )
     quality = (
         0.30
         + point_score * 0.20
@@ -428,13 +510,23 @@ def _smooth_alpha(confidence: float) -> float:
     low_conf = 1.0 - clamp(confidence, 0.0, 1.0)
     alpha = (
         ESTIMATOR_PROFILE["min_smooth_alpha"]
-        + (ESTIMATOR_PROFILE["max_smooth_alpha"] - ESTIMATOR_PROFILE["min_smooth_alpha"]) * low_conf
+        + (
+            ESTIMATOR_PROFILE["max_smooth_alpha"]
+            - ESTIMATOR_PROFILE["min_smooth_alpha"]
+        )
+        * low_conf
         + ESTIMATOR_PROFILE["low_conf_extra_smoothing"] * low_conf
     )
-    return clamp(alpha, ESTIMATOR_PROFILE["min_smooth_alpha"], ESTIMATOR_PROFILE["max_smooth_alpha"])
+    return clamp(
+        alpha,
+        ESTIMATOR_PROFILE["min_smooth_alpha"],
+        ESTIMATOR_PROFILE["max_smooth_alpha"],
+    )
 
 
-def _smooth_limited(previous: float, current: float, alpha: float, max_delta: float) -> float:
+def _smooth_limited(
+    previous: float, current: float, alpha: float, max_delta: float
+) -> float:
     """平滑单个值并限制单帧变化。"""
 
     smoothed = previous * alpha + current * (1.0 - alpha)
@@ -443,32 +535,18 @@ def _smooth_limited(previous: float, current: float, alpha: float, max_delta: fl
 
 
 def reset_estimator_state() -> None:
-    """重置估计器跨帧状态。
+    """Replace the session state with a clean instance."""
 
-    功能：让测试或新一轮仿真从干净状态开始。
-    参数：无。
-    返回：无。
-    逻辑：清空上一帧几何状态和时间戳。
-    """
-
-    global _LAST_TRACK, _LAST_TIMESTAMP, _LAST_RED_ENVIRONMENT, _RED_ENVIRONMENT_STREAK
-    global _LINE_MEMORY_FRAMES, _LINE_MEMORY_OFFSET, _LINE_MEMORY_HEADING, _LINE_MEMORY_CONFIDENCE
-    _LAST_TRACK = TrackState(0.0, 0.0, 0.0, 0.0, 0.0, True)
-    _LAST_TIMESTAMP = None
-    _LAST_RED_ENVIRONMENT = False
-    _RED_ENVIRONMENT_STREAK = 0
-    _LINE_MEMORY_FRAMES = 0
-    _LINE_MEMORY_OFFSET = 0.0
-    _LINE_MEMORY_HEADING = 0.0
-    _LINE_MEMORY_CONFIDENCE = 0.0
+    global _STATE
+    _STATE = EstimatorState()
 
 
 def _maybe_reset_estimator_by_timestamp(timestamp: float) -> None:
     """根据时间戳判断是否重置跨帧状态。"""
 
-    if _LAST_TIMESTAMP is None:
+    if _STATE.last_timestamp is None:
         return
-    elapsed = float(timestamp) - float(_LAST_TIMESTAMP)
+    elapsed = float(timestamp) - float(_STATE.last_timestamp)
     if elapsed < 0.0 or elapsed > ESTIMATOR_PROFILE["timestamp_reset_gap"]:
         reset_estimator_state()
 
@@ -482,38 +560,39 @@ def estimate_track(obs: PerceptionObs, timestamp: float) -> TrackState:
     逻辑：点集无效时返回衰减 lost 状态；有效时按 progress 拟合中心线并做自适应平滑。
     """
 
-    global _LAST_TRACK, _LAST_TIMESTAMP, _LAST_RED_ENVIRONMENT, _RED_ENVIRONMENT_STREAK
-
     timestamp = float(timestamp)
     _maybe_reset_estimator_by_timestamp(timestamp)
 
     observed_red = bool(obs.debug_flags & _RED_ENVIRONMENT_FLAG)
     if observed_red:
-        _RED_ENVIRONMENT_STREAK += 1
-    elif not _LAST_RED_ENVIRONMENT:
-        _RED_ENVIRONMENT_STREAK = 0
-    if _RED_ENVIRONMENT_STREAK >= _RED_ENVIRONMENT_LATCH_FRAMES:
-        _LAST_RED_ENVIRONMENT = True
-    red_environment = observed_red or _LAST_RED_ENVIRONMENT
+        _STATE.red_environment_streak += 1
+    elif not _STATE.last_red_environment:
+        _STATE.red_environment_streak = 0
+    if _STATE.red_environment_streak >= _RED_ENVIRONMENT_LATCH_FRAMES:
+        _STATE.last_red_environment = True
+    red_environment = observed_red or _STATE.last_red_environment
     line_trust = _line_target_trust(obs, timestamp, red_environment)
     line_trust = _update_line_memory(obs, line_trust, timestamp, red_environment)
 
     points = _clean_points(obs.center_points)
-    if len(points) < ESTIMATOR_PROFILE["min_center_points"] or obs.confidence < ESTIMATOR_PROFILE["lost_confidence"]:
+    if (
+        len(points) < ESTIMATOR_PROFILE["min_center_points"]
+        or obs.confidence < ESTIMATOR_PROFILE["lost_confidence"]
+    ):
         track = (
             _line_only_track(obs, timestamp, red_environment, line_trust)
             if line_trust > 0.0
             else _lost_track(obs.confidence, red_environment, obs)
         )
-        _LAST_TRACK = track
-        _LAST_TIMESTAMP = timestamp
+        _STATE.last_track = track
+        _STATE.last_timestamp = timestamp
         return track
 
     x_norm, progress, y_span = _normalize_points(points)
     if y_span < ESTIMATOR_PROFILE["min_y_span"]:
         track = _lost_track(obs.confidence, red_environment, obs)
-        _LAST_TRACK = track
-        _LAST_TIMESTAMP = timestamp
+        _STATE.last_track = track
+        _STATE.last_timestamp = timestamp
         return track
 
     coeffs, degree = _fit_centerline(progress, x_norm)
@@ -549,13 +628,18 @@ def estimate_track(obs: PerceptionObs, timestamp: float) -> TrackState:
     )
     fit_score = _fit_error_score(progress, x_norm, coeffs)
     curvature_trust = _curvature_trust(len(points), y_span, fit_score)
-    curvature = _curvature_from_fit(coeffs, degree, lateral_error, lookahead_error, curvature_trust)
+    curvature = _curvature_from_fit(
+        coeffs, degree, lateral_error, lookahead_error, curvature_trust
+    )
     left_margin_near = _near_edge_margin(obs.left_edge_points, "left")
     right_margin_near = _near_edge_margin(obs.right_edge_points, "right")
 
     confidence = _geometry_confidence(obs, points, y_span, fit_score)
     if line_trust > 0.0:
-        confidence = max(confidence, obs.line_confidence * ESTIMATOR_PROFILE["line_target_confidence_scale"])
+        confidence = max(
+            confidence,
+            obs.line_confidence * ESTIMATOR_PROFILE["line_target_confidence_scale"],
+        )
 
     # 红色环境（complex 赛道）感知难度更大，自然置信度偏低，
     # 给小幅加成减少误丢线，但仅在几何本身不算太差时生效。
@@ -564,8 +648,8 @@ def estimate_track(obs: PerceptionObs, timestamp: float) -> TrackState:
 
     if confidence < ESTIMATOR_PROFILE["lost_confidence"]:
         track = _lost_track(confidence, red_environment, obs)
-        _LAST_TRACK = track
-        _LAST_TIMESTAMP = timestamp
+        _STATE.last_track = track
+        _STATE.last_timestamp = timestamp
         return track
 
     alpha = _smooth_alpha(confidence)
@@ -576,10 +660,30 @@ def estimate_track(obs: PerceptionObs, timestamp: float) -> TrackState:
         ESTIMATOR_PROFILE["max_smooth_alpha"],
     )
     track = TrackState(
-        _smooth_limited(_LAST_TRACK.lateral_error, lateral_error, alpha, ESTIMATOR_PROFILE["max_error_delta"]),
-        _smooth_limited(_LAST_TRACK.heading_error, heading_error, alpha, ESTIMATOR_PROFILE["max_heading_delta"]),
-        _smooth_limited(_LAST_TRACK.curvature, curvature, curve_alpha, ESTIMATOR_PROFILE["max_curvature_delta"]),
-        _smooth_limited(_LAST_TRACK.lookahead_error, lookahead_error, alpha, ESTIMATOR_PROFILE["max_error_delta"]),
+        _smooth_limited(
+            _STATE.last_track.lateral_error,
+            lateral_error,
+            alpha,
+            ESTIMATOR_PROFILE["max_error_delta"],
+        ),
+        _smooth_limited(
+            _STATE.last_track.heading_error,
+            heading_error,
+            alpha,
+            ESTIMATOR_PROFILE["max_heading_delta"],
+        ),
+        _smooth_limited(
+            _STATE.last_track.curvature,
+            curvature,
+            curve_alpha,
+            ESTIMATOR_PROFILE["max_curvature_delta"],
+        ),
+        _smooth_limited(
+            _STATE.last_track.lookahead_error,
+            lookahead_error,
+            alpha,
+            ESTIMATOR_PROFILE["max_error_delta"],
+        ),
         confidence,
         False,
         red_environment,
@@ -593,6 +697,6 @@ def estimate_track(obs: PerceptionObs, timestamp: float) -> TrackState:
         max(float(obs.obstacle_size), 0.0),
         obs.frame_motion,
     )
-    _LAST_TRACK = track
-    _LAST_TIMESTAMP = timestamp
+    _STATE.last_track = track
+    _STATE.last_timestamp = timestamp
     return track

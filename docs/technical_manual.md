@@ -24,6 +24,14 @@ clamp_cmd()                      -> steering, speed
 
 The dataclasses in `controller/common.py` are contracts between the stages. Image processing remains in perception, geometric interpretation remains in estimation, and policy never reads raw pixels.
 
+Each stateful stage owns one explicit session object:
+
+- `PerceptionState` stores temporal road anchors and frame-motion history.
+- `EstimatorState` stores the last geometric estimate and lane-memory latch.
+- `PolicyState` stores mode hysteresis, smoothing, line correction, and recovery progress.
+
+The platform exposes one controller callback, so the maintained runtime uses one state object per stage. Reset functions replace the complete object instead of mutating unrelated module globals. This keeps state lifetime visible and makes incomplete resets harder to introduce.
+
 ## 2. Perception
 
 ### 2.1 Road masks
@@ -115,7 +123,7 @@ All traffic-specific paths are guarded by the active profile. This protects solo
 
 ## 7. Build architecture
 
-Modular source is convenient for development, but the platform requires a single file. `scripts/build_submission.py` concatenates modules in dependency order, removes local imports, selects a profile, and writes `team_controller.py`. Repository and SDK validators inspect the generated artifact rather than assuming the modular source is submission-compatible.
+Modular source is convenient for development, but the platform requires a single file. `scripts/build_submission.py` concatenates modules in dependency order, removes bundled imports by parsing their AST source spans, selects a profile, and writes `team_controller.py`. The import pass is independent of formatter line wrapping. Repository and SDK validators inspect the generated artifact rather than assuming the modular source is submission-compatible.
 
 ## 8. Validation strategy
 
