@@ -1,5 +1,7 @@
 # Script Reference
 
+Run examples from the repository root with its Python environment active. Webots launch scripts additionally require the [SDK setup](../docs/official_testing.md).
+
 ## Build and validation
 
 | Script | Purpose |

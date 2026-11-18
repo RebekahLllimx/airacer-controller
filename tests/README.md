@@ -1,11 +1,11 @@
 # Test Suite
 
-The test suite covers the public controller contract, generated submissions, perception and estimation behavior, policy state, profile isolation, and diagnostic tools.
+Run these commands from the repository root after installing `requirements.txt`. The suite covers the controller contract, generated submissions, perception and estimation, policy state, profile isolation, and diagnostic tools.
 
 ```bash
 python -m pytest -q
 python -m pytest tests/test_lane_line_follow.py
-python -m pytest tests/test_policy.py::test_name
+python -m pytest tests/test_policy.py::test_lateral_offset_controls_sign
 ```
 
 | Test group | Coverage |

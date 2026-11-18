@@ -1,6 +1,6 @@
 # AI Racer Controller Technical Manual
 
-This manual describes the stable controller architecture and the reasoning behind its main technical choices. Run-by-run parameter searches are intentionally kept outside this document.
+The controller combines color-based road perception, geometric track estimation, and a stateful steering and speed policy. Parameter sweeps and simulator measurements are recorded in the [experiment report](../experiments/report.md).
 
 ## 1. System overview
 
@@ -30,7 +30,7 @@ Each stateful stage owns one explicit session object:
 - `EstimatorState` stores the last geometric estimate and lane-memory latch.
 - `PolicyState` stores mode hysteresis, smoothing, line correction, and recovery progress.
 
-The platform exposes one controller callback, so the maintained runtime uses one state object per stage. Reset functions replace the complete object instead of mutating unrelated module globals. This keeps state lifetime visible and makes incomplete resets harder to introduce.
+The runtime uses one state object per stage and assumes one vehicle per controller instance. Reset functions replace the complete object. Separate vehicles must run separate instances; sharing one imported module across simultaneous vehicles would mix their frame histories.
 
 ## 2. Perception
 
@@ -107,7 +107,7 @@ The far-field term is gated by physical corner arrival. A distant bend can be vi
 
 When a trusted lane marking indicates that the vehicle is already inside the intended path, a bounded corner-relief term reduces further inward anticipation. The final command then receives smoothing, rate limiting, speed-dependent steering reduction, a dead zone, and output clipping.
 
-Corner arrival, inside-corner relief, near/far term blending, and drive-mode adjustments are implemented as separate policy functions. Recovery selection similarly returns an immutable `EscapePlan` before any state is mutated. These boundaries replace the previous accumulation of case-specific branches inside a few large controller functions.
+Corner arrival, inside-corner relief, near/far term blending, and drive-mode adjustments are separate policy functions. Recovery selection returns an immutable `EscapePlan` before policy state changes, so plan selection and execution can be tested independently.
 
 ### 4.3 Speed
 
@@ -127,7 +127,7 @@ All traffic-specific paths are guarded by the active profile. This protects solo
 
 ## 6. Output and failure handling
 
-`clamp_cmd()` limits steering and speed to their supported ranges. The entry layer resets temporal state on timestamp rollback and returns a safe stopped command if an unexpected stage exception escapes. Debug logging and frame capture exist only in generated local test builds; they are not included in formal submissions.
+`clamp_cmd()` bounds both values to `[-1, 1]`. Ordinary forward speed is nonnegative; negative speed is reserved for traffic recovery and requires SDK reverse-motion support. The stage functions reset temporal state on timestamp rollback. The entry callback catches an escaping stage exception and returns `(0.0, 0.0)`. Debug logging and frame capture are available in local test builds; formal submissions exclude this file I/O.
 
 ## 7. Build architecture
 

@@ -1,5 +1,7 @@
 # Official SDK and Webots Testing
 
+Run the commands from the controller repository root, with the Python 3.10 environment described in the root README active. Offline checks need the repository dependencies; simulator runs additionally need Webots and a separate SDK checkout. The recorded R071 compatibility run used Webots R2025a and SDK revision `cfdeedb`, including the local asset/checkpoint adjustments described below.
+
 The official SDK is kept in a separate checkout. Point `AIRACER_SDK` to its `sdk/` directory:
 
 ```bash
@@ -8,7 +10,7 @@ export AIRACER_SDK="$(cd ../pkudsa.airacer/sdk && pwd)"
 python "$AIRACER_SDK/check_env.py"
 ```
 
-If the SDK is already installed, only the environment variable is required. Keep the SDK revision with any recorded run because worlds, validators, and competition rules can change.
+If the SDK is already installed, set the variable to that checkout's `sdk/` directory. It must contain `run_local.py`, `validate_controller.py`, and `rules.yaml`. Record its Git revision with each run; a fresh default-branch clone is not a pinned reproduction of R071.
 
 ## 1. Install repository dependencies
 

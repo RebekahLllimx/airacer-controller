@@ -1,6 +1,6 @@
 # Webots Runbook
 
-This guide launches repeatable solo and multi-car simulations and records the evidence needed to diagnose a run.
+Before running these commands, install the repository dependencies, set `AIRACER_SDK`, and configure Webots' Python interpreter as described in [SDK setup](official_testing.md). Run from the repository root. These launch scripts rebuild local debug controllers and rotate previous outputs under `.tmp/`; archive any run you need to retain before starting another.
 
 ## Solo runs
 

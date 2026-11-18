@@ -1,6 +1,6 @@
 # Controller Module Guide
 
-`controller/` contains the maintained, modular implementation. The generated files in `submissions/` should be rebuilt with `scripts/build_submission.py` rather than edited by hand.
+`controller/` contains the modular runtime source. The generated files in `submissions/` should be rebuilt with `scripts/build_submission.py` rather than edited by hand. Run the commands below from the repository root after the environment setup in the root README.
 
 ## Data flow
 

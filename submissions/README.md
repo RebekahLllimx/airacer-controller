@@ -1,6 +1,6 @@
 # Generated Submissions
 
-`submissions/` contains the self-contained controller files produced by `scripts/build_submission.py`. Edit the modular source under `controller/`, then rebuild these artifacts.
+`submissions/` contains the self-contained controller files produced by `scripts/build_submission.py`. Edit the modular source under `controller/`, then rebuild these artifacts. The commands below run from the repository root, not from this directory, and use the environment described in the root README.
 
 | Directory | Profile | Scenario |
 | --- | --- | --- |

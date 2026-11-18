@@ -6,9 +6,9 @@ The project implements a vision-only racing controller that converts stereo came
 
 The solo controller completed the official complex-world evaluation with a recorded total time of approximately `252.9 s` and no major collision in the matching metadata. In the recorded six-vehicle complex-world tests, the traffic profile finished second with no disqualification or serious collision. These values belong to the documented SDK and world revisions and should not be generalized to a different simulator configuration.
 
-A later local compatibility run used SDK revision `cfdeedb`, Webots R2025a, and the generated `with_other_cars` submission on the basic oval. Supervisor metadata recorded one completed lap in `139.744 s`, rank 1, and zero major collisions. The run used official R2025a Webots assets and corrected local asset paths and checkpoint coordinates in an isolated SDK checkout; it is reproducible simulator evidence, not an online competition result.
+A later [local compatibility run, R071](r071_webots_r2025a.json), used SDK revision `cfdeedb`, Webots R2025a, and the generated `with_other_cars` submission on the basic oval. Supervisor metadata recorded one completed lap in `139.744 s`, rank 1, and zero major collisions. Its recorded configuration includes official R2025a Webots assets, corrected local asset paths, and adjusted checkpoint coordinates in a separate SDK checkout.
 
-R072 repeated that setup with the `no_other_cars` profile. It completed the measured lap in `139.136 s`, only `0.608 s` (`0.44%`) faster than R071. This difference is not large enough to claim a performance improvement. It does show that traffic-specific perception and recovery were not the principal limit on this basic-world run; track length, the vehicle speed limit, and corner-speed planning dominate the observed time.
+[R072](r072_no_other_cars_webots_r2025a.json) repeated that setup with the `no_other_cars` profile. It completed the measured lap in `139.136 s`, a gap of `0.608 s` (`0.44%`) from R071. These two local runs had similar lap times while retaining the shared driving core. They do not separately measure the contributions of track geometry, the vehicle's physical speed limit, or corner-speed planning.
 
 ## Architecture
 
@@ -20,7 +20,7 @@ Two generated profiles share the driving core. `no_other_cars` bypasses opponent
 
 Early versions steered toward distant curvature before the vehicle physically reached a corner. This produced systematic inside cutting: a far-field heading signal became large during the approach even while the near-field road centre remained straight. The final design gates far-field steering with near-field lateral arrival, compensates the gate for speed, latches it through the corner, and decays it after exit.
 
-This change addressed the mechanism rather than adding a fixed steering correction. Later speed tuning raised medium-corner speed while preserving the sharp-corner limit. The R049 baseline records the resulting solo-driving behavior and remains the principal rollback reference.
+Later speed tuning raised medium-corner speed while preserving the sharp-corner limit. The [R049 baseline](../baselines/R049_turn_in_speed_best_2026-06-13/) records the resulting solo-driving behavior and remains the principal rollback reference.
 
 ## Multi-car investigation
 

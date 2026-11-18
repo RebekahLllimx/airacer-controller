@@ -1,6 +1,6 @@
 # AI Racer Controller
 
-A camera-based controller for the PKU DSA AI Racer course challenge. It reads left and right camera frames, estimates the road, and returns steering and speed for each frame. Development happens in modular Python code; the competition artifact is a generated, self-contained `team_controller.py` file.
+A camera-based racing controller for solo and multi-car scenarios in Webots. It turns left and right camera frames into steering and speed, combining road tracking, obstacle avoidance, and recovery after lane loss. Modular Python source is assembled into a self-contained `team_controller.py` for the PKU DSA AI Racer challenge.
 
 ![Perception-to-control pipeline](experiments/figures/run3_analysis/fig1_pipeline.png)
 
@@ -17,7 +17,7 @@ def control(left_img, right_img, timestamp):
     return steering, speed
 ```
 
-Steering is bounded to `[-1, 1]`. Normal forward speed is in `[0, 1]`; the local multi-car recovery policy can briefly request negative speed to reverse out of a blockage.
+The inputs are BGR image arrays and simulation time in seconds. Commands are normalized controls, not angles or physical speed: steering and speed are bounded to `[-1, 1]`. Normal driving uses speed in `[0, 1]`; multi-car recovery can request reverse speed when the installed SDK supports it. Timestamp rollback resets cross-frame state. Run a separate controller instance for each vehicle.
 
 | Profile | Purpose | Generated artifact |
 | --- | --- | --- |
@@ -28,9 +28,11 @@ Steering is bounded to `[-1, 1]`. Normal forward speed is in `[0, 1]`; the local
 
 ## Run the offline checks
 
-From the repository root, with Python and the packages in `requirements.txt`:
+From the repository root, using Python 3.10 (the CI version):
 
 ```bash
+python -m venv .venv
+source .venv/bin/activate
 python -m pip install -r requirements.txt
 python -m pytest -q
 
@@ -64,13 +66,13 @@ The curated [`experiments/runs.csv`](experiments/runs.csv) registry and [experim
 | [R065 traffic run](experiments/runs.csv) | `with_other_cars`, six vehicles, complex world | 1 completed lap in `256.864 s`; rank 2; 0 major collisions |
 | [R068 solo run](experiments/runs.csv) | `no_other_cars`, complex world | 1 completed lap in `252.928 s`; rank 1; 0 major collisions |
 
-R071 is a local SDK and simulator compatibility result, not an online competition score. R065 and R068 retain the world and platform context recorded during course development. The [experiment report](experiments/report.md) explains the validation layers and known limits behind these figures.
+R071 is a local compatibility run using SDK asset and checkpoint-coordinate corrections recorded in its JSON run record. R065 and R068 use the course-development worlds and traffic layouts. Compare lap times only within the same world and configuration; the [experiment report](experiments/report.md) gives their validation context.
 
 ![Multi-car pass reconstructed from Webots telemetry](experiments/figures/avoidance_webots/pass_topdown.png)
 
 The plot shows the traffic controller selecting the open side of a nearby vehicle and returning to its normal line. Camera detections, control state, and world telemetry were reviewed together rather than treating the trajectory alone as proof of perception quality.
 
-This was a **five-person team project**. My contribution centred on multi-car avoidance and recovery in the shared [perception](controller/perception.py) and [policy](controller/policy.py) pipeline: stabilizing ambiguous road segmentation with temporal state, resolving a controller-simulator command mismatch, integrating modules through shared contracts and single-file builds, and adding multi-car launch and blocked-road test procedures. The [contribution note](docs/r052_contribution_scope.md) records the reviewed scope and its relationship to later team development.
+This was a five-person team project. My contribution centred on multi-car avoidance and recovery in the shared [perception](controller/perception.py) and [policy](controller/policy.py) pipeline: stabilizing ambiguous road segmentation with temporal state, resolving a controller-simulator command mismatch, integrating modules through shared contracts and single-file builds, and adding multi-car launch and blocked-road test procedures. The [contribution note](docs/r052_contribution_scope.md) identifies the corresponding modules and commits.
 
 ## Documentation
 
